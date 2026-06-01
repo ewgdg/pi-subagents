@@ -30,7 +30,7 @@ export interface ChainOutputMapEntry {
 
 export type ChainOutputMap = Record<string, ChainOutputMapEntry>;
 
-export type WorkflowNodeStatus = "pending" | "running" | "completed" | "failed" | "paused" | "detached";
+export type WorkflowNodeStatus = "pending" | "running" | "completed" | "failed" | "paused" | "detached" | "timed-out";
 
 export interface WorkflowGraphNode {
 	id: string;
@@ -142,7 +142,7 @@ export interface ControlEvent {
 	recentFailureSummary?: string;
 }
 
-export type SubagentResultStatus = "completed" | "failed" | "paused" | "detached";
+export type SubagentResultStatus = "completed" | "failed" | "paused" | "detached" | "timed-out";
 export type SubagentRunMode = "single" | "parallel" | "chain";
 
 export type PublicNestedStepSummary = Pick<
@@ -415,6 +415,7 @@ export interface SingleResult {
 	detached?: boolean;
 	detachedReason?: string;
 	interrupted?: boolean;
+	timedOut?: boolean;
 	messages?: Message[];
 	usage: Usage;
 	model?: string;
@@ -780,6 +781,8 @@ export interface RunSyncOptions {
 	cwd?: string;
 	signal?: AbortSignal;
 	interruptSignal?: AbortSignal;
+	timeoutMs?: number;
+	timeoutAt?: number;
 	allowIntercomDetach?: boolean;
 	intercomEvents?: IntercomEventBus;
 	onUpdate?: (r: import("@earendil-works/pi-agent-core").AgentToolResult<Details>) => void;

@@ -81,7 +81,7 @@ interface ChainExecutionDetailsInput {
 	outputs?: ChainOutputMap;
 	currentFlatIndex?: number;
 	dynamicChildren?: Record<number, Array<{ agent: string; label?: string; flatIndex: number; itemKey: string; outputName?: string; structured?: boolean; error?: string }>>;
-	dynamicGroupStatuses?: Record<number, { status: "pending" | "running" | "completed" | "failed" | "paused" | "detached"; error?: string; acceptance?: SingleResult["acceptance"] }>;
+	dynamicGroupStatuses?: Record<number, { status: "pending" | "running" | "completed" | "failed" | "paused" | "detached" | "timed-out"; error?: string; acceptance?: SingleResult["acceptance"] }>;
 }
 
 interface ParallelChainRunInput {
@@ -103,6 +103,8 @@ interface ParallelChainRunInput {
 	sessionFileForIndex?: (idx?: number) => string | undefined;
 	shareEnabled: boolean;
 	artifactConfig: ArtifactConfig;
+	timeoutMs?: number;
+	timeoutAt?: number;
 	artifactsDir: string;
 	signal?: AbortSignal;
 	onUpdate?: (r: AgentToolResult<Details>) => void;
@@ -265,6 +267,7 @@ async function runParallelChainTasks(input: ParallelChainRunInput): Promise<Sing
 				cwd: taskCwd,
 				signal: input.signal,
 				interruptSignal: interruptController.signal,
+				...(input.timeoutMs !== undefined && input.timeoutAt !== undefined ? { timeoutMs: input.timeoutMs, timeoutAt: input.timeoutAt } : {}),
 				allowIntercomDetach: taskAgentConfig?.systemPrompt?.includes(INTERCOM_BRIDGE_MARKER) === true,
 				intercomEvents: input.intercomEvents,
 				runId: input.runId,
@@ -391,6 +394,7 @@ interface ChainExecutionParams {
 	nestedRoute?: NestedRouteInfo;
 	worktreeSetupHook?: string;
 	worktreeSetupHookTimeoutMs?: number;
+	timeoutMs?: number;
 }
 
 interface ChainExecutionResult {
@@ -580,6 +584,7 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 		tuiBehaviorOverrides = result.behaviorOverrides;
 	}
 
+	const timeoutAt = params.timeoutMs !== undefined ? Date.now() + params.timeoutMs : undefined;
 	let prev = "";
 	let globalTaskIndex = 0;
 	let progressCreated = false;
@@ -648,6 +653,7 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 					shareEnabled,
 					artifactConfig,
 					artifactsDir,
+					...(params.timeoutMs !== undefined && timeoutAt !== undefined ? { timeoutMs: params.timeoutMs, timeoutAt } : {}),
 					signal,
 					onUpdate,
 					results,
@@ -673,6 +679,18 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 					results.push(result);
 					if (result.progress) allProgress.push(result.progress);
 					if (result.artifactPaths) allArtifactPaths.push(result.artifactPaths);
+				}
+				const timedOutIndexInStep = parallelResults.findIndex((result) => result.timedOut);
+				const timedOut = timedOutIndexInStep >= 0 ? parallelResults[timedOutIndexInStep] : undefined;
+				if (timedOut) {
+					return {
+						content: [{ type: "text", text: `Chain timed out at step ${stepIndex + 1} (${timedOut.agent}): ${timedOut.error ?? "timeout expired"}` }],
+						isError: true,
+						details: buildChainExecutionDetails(makeDetailsInput({
+							currentStepIndex: stepIndex,
+							currentFlatIndex: globalTaskIndex - step.parallel.length + timedOutIndexInStep,
+						})),
+					};
 				}
 				const interruptedIndexInStep = parallelResults.findIndex((result) => result.interrupted);
 				const interrupted = interruptedIndexInStep >= 0 ? parallelResults[interruptedIndexInStep] : undefined;
@@ -835,6 +853,7 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 				shareEnabled,
 				artifactConfig,
 				artifactsDir,
+				...(params.timeoutMs !== undefined && timeoutAt !== undefined ? { timeoutMs: params.timeoutMs, timeoutAt } : {}),
 				signal,
 				onUpdate,
 				results,
@@ -861,6 +880,19 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 				if (result.artifactPaths) allArtifactPaths.push(result.artifactPaths);
 			}
 			const collected = collectDynamicResults(step, materialized.items, parallelResults);
+			const timedOutIndexInStep = parallelResults.findIndex((result) => result.timedOut);
+			const timedOut = timedOutIndexInStep >= 0 ? parallelResults[timedOutIndexInStep] : undefined;
+			if (timedOut) {
+				dynamicGroupStatuses[stepIndex] = { status: "timed-out", error: timedOut.error };
+				return {
+					content: [{ type: "text", text: `Chain timed out at step ${stepIndex + 1} (${timedOut.agent}): ${timedOut.error ?? "timeout expired"}` }],
+					isError: true,
+					details: buildChainExecutionDetails(makeDetailsInput({
+						currentStepIndex: stepIndex,
+						currentFlatIndex: globalTaskIndex - dynamicParallelStep.parallel.length + timedOutIndexInStep,
+					})),
+				};
+			}
 			const interruptedIndexInStep = parallelResults.findIndex((result) => result.interrupted);
 			const interrupted = interruptedIndexInStep >= 0 ? parallelResults[interruptedIndexInStep] : undefined;
 			if (interrupted) {
@@ -1009,6 +1041,7 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 				cwd: resolveChildCwd(cwd ?? ctx.cwd, seqStep.cwd),
 				signal,
 				interruptSignal: interruptController.signal,
+				...(params.timeoutMs !== undefined && timeoutAt !== undefined ? { timeoutMs: params.timeoutMs, timeoutAt } : {}),
 				allowIntercomDetach: agentConfig.systemPrompt?.includes(INTERCOM_BRIDGE_MARKER) === true,
 				intercomEvents,
 				runId,
@@ -1088,6 +1121,13 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 			if (r.progress) allProgress.push(r.progress);
 			if (r.artifactPaths) allArtifactPaths.push(r.artifactPaths);
 
+			if (r.timedOut) {
+				return {
+					content: [{ type: "text", text: `Chain timed out at step ${stepIndex + 1} (${r.agent}): ${r.error ?? "timeout expired"}` }],
+					isError: true,
+					details: buildChainExecutionDetails(makeDetailsInput({ currentStepIndex: stepIndex, currentFlatIndex: globalTaskIndex - 1 })),
+				};
+			}
 			if (r.interrupted) {
 				return {
 					content: [{ type: "text", text: `Chain paused after interrupt at step ${stepIndex + 1} (${r.agent}). Waiting for explicit next action.` }],

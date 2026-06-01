@@ -108,6 +108,43 @@ function appendRecentOutput(progress: AgentProgress, lines: string[]): void {
 	}
 }
 
+const FOREGROUND_TIMEOUT_EXIT_CODE = 124;
+
+function formatForegroundTimeoutMessage(timeoutMs: number | undefined): string {
+	return timeoutMs ? `Timed out after ${timeoutMs}ms.` : "Timed out.";
+}
+
+function createTimedOutResult(agent: string, task: string, options: RunSyncOptions): SingleResult {
+	const message = formatForegroundTimeoutMessage(options.timeoutMs);
+	return {
+		agent,
+		task,
+		exitCode: FOREGROUND_TIMEOUT_EXIT_CODE,
+		messages: [],
+		usage: emptyUsage(),
+		error: message,
+		finalOutput: message,
+		timedOut: true,
+		progress: {
+			index: options.index ?? 0,
+			agent,
+			status: "failed",
+			task,
+			recentTools: [],
+			recentOutput: [message],
+			toolCount: 0,
+			tokens: 0,
+			durationMs: 0,
+			lastActivityAt: Date.now(),
+		},
+		progressSummary: {
+			toolCount: 0,
+			tokens: 0,
+			durationMs: 0,
+		},
+	};
+}
+
 function stripAcceptanceReportsFromMessages(messages: Message[] | undefined): void {
 	for (const message of messages ?? []) {
 		if (message.role !== "assistant" || !Array.isArray(message.content)) continue;
@@ -263,6 +300,9 @@ async function runSingleAttempt(
 		let detached = false;
 		let intercomStarted = false;
 		let assistantError: string | undefined;
+		let timedOut = false;
+		let timeoutTimer: NodeJS.Timeout | undefined;
+		let timeoutEscalationTimer: NodeJS.Timeout | undefined;
 		let removeAbortListener: (() => void) | undefined;
 		let removeInterruptListener: (() => void) | undefined;
 		let activityTimer: NodeJS.Timeout | undefined;
@@ -334,6 +374,14 @@ async function runSingleAttempt(
 			settled = true;
 			clearFinalDrainTimers();
 			clearStdioGuard();
+			if (timeoutTimer) {
+				clearTimeout(timeoutTimer);
+				timeoutTimer = undefined;
+			}
+			if (timeoutEscalationTimer) {
+				clearTimeout(timeoutEscalationTimer);
+				timeoutEscalationTimer = undefined;
+			}
 			if (activityTimer) {
 				clearInterval(activityTimer);
 				activityTimer = undefined;
@@ -640,9 +688,37 @@ async function runSingleAttempt(
 			}
 		}
 
+		if (options.timeoutAt !== undefined) {
+			const triggerTimeout = () => {
+				if (processClosed || detached || settled || timedOut) return;
+				timedOut = true;
+				const message = formatForegroundTimeoutMessage(options.timeoutMs);
+				result.timedOut = true;
+				result.error = message;
+				result.finalOutput = message;
+				progress.status = "failed";
+				progress.durationMs = Date.now() - startTime;
+				appendRecentOutput(progress, [message]);
+				progress.activityState = undefined;
+				fireUpdate();
+				trySignalChild(proc, "SIGINT");
+				timeoutEscalationTimer = setTimeout(() => {
+					if (settled || processClosed || detached) return;
+					trySignalChild(proc, "SIGTERM");
+				}, 1000);
+				timeoutEscalationTimer.unref?.();
+			};
+			const delay = options.timeoutAt - Date.now();
+			if (delay <= 0) triggerTimeout();
+			else {
+				timeoutTimer = setTimeout(triggerTimeout, delay);
+				timeoutTimer.unref?.();
+			}
+		}
+
 		if (options.interruptSignal) {
 			const interrupt = () => {
-				if (processClosed || detached || settled) return;
+				if (processClosed || detached || settled || timedOut) return;
 				interruptedByControl = true;
 				progress.status = "running";
 				progress.durationMs = Date.now() - startTime;
@@ -664,6 +740,23 @@ async function runSingleAttempt(
 		}
 	});
 	result.exitCode = exitCode;
+	if (result.timedOut) {
+		result.exitCode = FOREGROUND_TIMEOUT_EXIT_CODE;
+		result.error = result.error ?? formatForegroundTimeoutMessage(options.timeoutMs);
+		result.finalOutput = result.finalOutput || result.error;
+		if (result.progress) {
+			result.progress.status = "failed";
+			result.progress.activityState = undefined;
+			result.progress.durationMs = Date.now() - startTime;
+		}
+		result.progressSummary = {
+			toolCount: progress.toolCount,
+			tokens: progress.tokens,
+			durationMs: result.progress?.durationMs ?? Date.now() - startTime,
+		};
+		result.controlEvents = allControlEvents.length ? allControlEvents : undefined;
+		return result;
+	}
 	if (interruptedByControl) {
 		result.exitCode = 0;
 		result.interrupted = true;
@@ -915,6 +1008,9 @@ export async function runSync(
 			error: outputModeValidationError,
 		};
 	}
+	if (options.timeoutAt !== undefined && Date.now() >= options.timeoutAt) {
+		return createTimedOutResult(agentName, task, options);
+	}
 
 	const shareEnabled = options.share === true;
 	const effectiveAcceptance = resolveEffectiveAcceptance({
@@ -1019,7 +1115,7 @@ export async function runSync(
 		if (attemptSucceeded) {
 			break;
 		}
-		if (!isRetryableModelFailure(result.error) || i === modelsToTry.length - 1) {
+		if (result.timedOut || !isRetryableModelFailure(result.error) || i === modelsToTry.length - 1) {
 			break;
 		}
 		attemptNotes.push(formatModelAttemptNote(attempt, modelsToTry[i + 1]));

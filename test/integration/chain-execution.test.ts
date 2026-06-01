@@ -88,6 +88,7 @@ interface ChainResultItem {
 	structuredOutput?: unknown;
 	task?: string;
 	detached?: boolean;
+	timedOut?: boolean;
 	attemptedModels?: string[];
 	skills?: string[];
 	acceptance?: { status?: string; verifyRuns?: Array<{ status?: string }>; childReport?: unknown; runtimeChecks?: Array<{ status?: string; id?: string }> };
@@ -217,6 +218,33 @@ describe("chain execution — sequential", { skip: !available ? "pi packages not
 		assert.equal(result.details.results.length, 2);
 		assert.equal(result.details.results[0].agent, "analyst");
 		assert.equal(result.details.results[1].agent, "reporter");
+	});
+
+	it("returns partial results when a foreground chain times out", async () => {
+		mockPi.onCall({ output: "First complete" });
+		mockPi.onCall({ delay: 10000 });
+		const agents = [makeAgent("first"), makeAgent("second")];
+
+		const start = Date.now();
+		const result = await executeChain(
+			makeChainParams(
+				[
+					{ agent: "first", task: "Finish quickly" },
+					{ agent: "second", task: "Run too long" },
+				],
+				agents,
+				{ timeoutMs: 250 },
+			),
+		);
+		const elapsed = Date.now() - start;
+
+		assert.ok(elapsed < 5000, `should time out early, took ${elapsed}ms`);
+		assert.equal(result.isError, true);
+		assert.match(result.content[0]?.text ?? "", /Chain timed out at step 2/);
+		assert.equal(result.details.results.length, 2);
+		assert.equal(result.details.results[0].exitCode, 0);
+		assert.equal(result.details.results[1].exitCode, 124);
+		assert.equal(result.details.results[1].timedOut, true);
 	});
 
 	it("passes file-only saved-output references through {previous}", async () => {

@@ -24,6 +24,14 @@ interface SubagentParamsSchema {
 			minimum?: number;
 			description?: string;
 		};
+		timeoutMs?: {
+			minimum?: number;
+			description?: string;
+		};
+		maxRuntimeMs?: {
+			minimum?: number;
+			description?: string;
+		};
 		id?: {
 			type?: string;
 			description?: string;
@@ -143,6 +151,19 @@ describe("SubagentParams schema", { skip: !schemasAvailable ? "typebox not avail
 		assert.ok(concurrencySchema, "concurrency schema should exist");
 		assert.equal(concurrencySchema.minimum, 1);
 		assert.match(String(concurrencySchema.description ?? ""), /parallel/i);
+	});
+
+	it("includes foreground run timeout aliases", () => {
+		const timeoutSchema = SubagentParams?.properties?.timeoutMs;
+		assert.ok(timeoutSchema, "timeoutMs schema should exist");
+		assert.equal(timeoutSchema.minimum, 1);
+		assert.match(String(timeoutSchema.description ?? ""), /foreground/i);
+		assert.match(String(timeoutSchema.description ?? ""), /soft-interrupted/i);
+
+		const maxRuntimeSchema = SubagentParams?.properties?.maxRuntimeMs;
+		assert.ok(maxRuntimeSchema, "maxRuntimeMs schema should exist");
+		assert.equal(maxRuntimeSchema.minimum, 1);
+		assert.match(String(maxRuntimeSchema.description ?? ""), /alias/i);
 	});
 
 	it("uses an enum for management and control actions", () => {

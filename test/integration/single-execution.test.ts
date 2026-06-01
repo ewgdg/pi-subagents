@@ -76,6 +76,7 @@ interface RunSyncResult {
 	artifactPaths?: ArtifactPaths;
 	finalOutput?: string;
 	interrupted?: boolean;
+	timedOut?: boolean;
 	detached?: boolean;
 	detachedReason?: string;
 	savedOutputPath?: string;
@@ -1243,6 +1244,26 @@ describe("single sync execution", { skip: !available ? "pi packages not availabl
 		// proving the abort signal terminated the process early.
 		assert.ok(elapsed < 5000, `should abort early, took ${elapsed}ms`);
 		// Exit code is platform-dependent (Windows: often 1 or 0, Linux: null/143)
+	});
+
+	it("times out the current foreground run without retrying fallback models", async () => {
+		mockPi.onCall({ delay: 10000 });
+		const agents = [makeAgent("slow", { model: "mock/primary", fallbackModels: ["mock/fallback"] })];
+
+		const start = Date.now();
+		const result = await runSync(tempDir, agents, "slow", "Slow task", {
+			runId: "timeout-run",
+			timeoutMs: 150,
+			timeoutAt: Date.now() + 150,
+		});
+		const elapsed = Date.now() - start;
+
+		assert.ok(elapsed < 5000, `should time out early, took ${elapsed}ms`);
+		assert.equal(result.exitCode, 124);
+		assert.equal(result.timedOut, true);
+		assert.equal(result.interrupted, undefined);
+		assert.match(result.error ?? "", /Timed out after 150ms/);
+		assert.equal(mockPi.callCount(), 1, "timeout should not retry fallback models");
 	});
 
 	it("soft-interrupts the current turn and returns a paused result", async () => {
