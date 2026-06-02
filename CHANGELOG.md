@@ -11,6 +11,7 @@
 
 ### Fixed
 - Removed a provider-unfriendly required-only subschema from the public `acceptance` tool schema so Kimi models served through OpenCode Go can load the `subagent` tool, while keeping runtime validation for empty acceptance contracts.
+- Clarified acceptance-report prompts so required evidence like `diff-summary` must be copied into structured JSON fields such as `diffSummary`, not only described in visible prose.
 
 ## [0.27.0] - 2026-05-30
 

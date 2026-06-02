@@ -34,6 +34,22 @@ const ACCEPTANCE_KEYS = new Set([
 
 const REMOVED_ACCEPTANCE_KEYS = new Set(["level", "finalization", "reason"]);
 
+const EVIDENCE_REPORT_FIELDS: Record<AcceptanceEvidenceKind, string> = {
+	"changed-files": "changedFiles: array of changed file paths",
+	"tests-added": "testsAddedOrUpdated: array of test files, suites, or cases added/updated",
+	"commands-run": "commandsRun: array of commands with result passed/failed/not-run and a short summary",
+	"validation-output": "validationOutput: array of relevant validation output summaries",
+	"residual-risks": "residualRisks: array of remaining risks or blockers; use [] when none remain",
+	"no-staged-files": "noStagedFiles: boolean",
+	"diff-summary": "diffSummary: non-empty string summarizing changed behavior and important files",
+	"review-findings": "reviewFindings: array of reviewer findings; use [] when no findings remain",
+	"manual-notes": "manualNotes: string for manual notes or external evidence",
+};
+
+export function formatEvidenceReportFieldMapping(evidence: AcceptanceEvidenceKind[]): string[] {
+	return evidence.map((kind) => `- ${kind} -> ${EVIDENCE_REPORT_FIELDS[kind]}`);
+}
+
 function hasArrayItems(value: unknown): boolean {
 	return Array.isArray(value) && value.length > 0;
 }
@@ -260,6 +276,14 @@ export function formatAcceptancePrompt(acceptance: ResolvedAcceptanceConfig): st
 		"",
 		`Required evidence: ${acceptance.evidence.join(", ") || "none explicitly requested"}`,
 	];
+	if (acceptance.evidence.length > 0) {
+		lines.push(
+			"",
+			"Structured evidence must be present in the `acceptance-report` JSON fields. Markdown sections in your visible answer do not satisfy required evidence by themselves. If you already described evidence in prose, copy or summarize it into the matching JSON field.",
+			"Evidence field mapping:",
+			...formatEvidenceReportFieldMapping(acceptance.evidence),
+		);
+	}
 	if (acceptance.verify.length > 0) {
 		lines.push("", "Runtime verification commands configured by parent:");
 		for (const command of acceptance.verify) lines.push(`- ${command.id}: ${command.command}`);
@@ -283,6 +307,9 @@ export function formatAcceptancePrompt(acceptance: ResolvedAcceptanceConfig): st
 			validationOutput: [],
 			residualRisks: [],
 			noStagedFiles: true,
+			diffSummary: "concise summary of changed behavior and important files",
+			reviewFindings: [],
+			manualNotes: "manual notes or external evidence, if any",
 			notes: "anything else the parent should know",
 		}, null, 2),
 		"```",

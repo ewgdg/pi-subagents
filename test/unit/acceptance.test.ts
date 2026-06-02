@@ -76,7 +76,7 @@ describe("acceptance gates", () => {
 		const resolved = resolveEffectiveAcceptance({
 			agentName: "worker",
 			task: "Implement a fix",
-			explicit: { criteria: ["Patch the bug"], stopRules: ["Do not stop after analysis"] },
+			explicit: { criteria: ["Patch the bug"], evidence: ["diff-summary", "changed-files"], stopRules: ["Do not stop after analysis"] },
 		});
 		const prompt = formatAcceptancePrompt(resolved);
 
@@ -84,6 +84,11 @@ describe("acceptance gates", () => {
 		assert.doesNotMatch(prompt, /Acceptance level:/);
 		assert.match(prompt, /same session for a bounded self-review\/repair loop/);
 		assert.match(prompt, /Patch the bug/);
+		assert.match(prompt, /Markdown sections in your visible answer do not satisfy required evidence/);
+		assert.match(prompt, /diff-summary -> diffSummary: non-empty string/);
+		assert.match(prompt, /changed-files -> changedFiles: array of changed file paths/);
+		assert.match(prompt, /"diffSummary":/);
+		assert.match(prompt, /"reviewFindings": \[\]/);
 		assert.match(prompt, /```acceptance-report/);
 
 		const initialLedger = {
@@ -108,6 +113,10 @@ describe("acceptance gates", () => {
 		assert.match(finalizationPrompt, /rejected if the contract is still not satisfied after turn 2/);
 		assert.match(finalizationPrompt, /explain the blocker in residualRisks/);
 		assert.match(finalizationPrompt, /concrete evidence from files, commands, validation output/);
+		assert.match(finalizationPrompt, /Markdown sections in the visible answer do not satisfy required evidence/);
+		assert.match(finalizationPrompt, /copy or summarize it into the matching JSON field/);
+		assert.match(finalizationPrompt, /diff-summary -> diffSummary: non-empty string/);
+		assert.match(finalizationPrompt, /"diffSummary":/);
 		assert.match(finalizationPrompt, /Stop rules are hard constraints/);
 		assert.match(finalizationPrompt, /Previous finalization failure/);
 		assert.match(finalizationPrompt, /exactly one fenced JSON block/);
@@ -149,6 +158,28 @@ describe("acceptance gates", () => {
 
 		assert.equal(ledger.status, "rejected");
 		assert.match(acceptanceFailureMessage(ledger) ?? "", /tests-added evidence missing/);
+	}));
+
+	it("requires diff-summary evidence in acceptance-report.diffSummary", async () => withTempRepo(async (cwd) => {
+		const acceptance = resolveEffectiveAcceptance({
+			agentName: "worker",
+			task: "Implement a fix",
+			explicit: { criteria: ["Patch the bug"], evidence: ["diff-summary"] },
+		});
+		const markdownOnly = await evaluateAcceptance({
+			acceptance,
+			output: `## Diff summary\n\n- Patched the bug\n${report()}`,
+			cwd,
+		});
+		assert.equal(markdownOnly.status, "rejected");
+		assert.match(acceptanceFailureMessage(markdownOnly) ?? "", /diff-summary evidence missing/);
+
+		const structured = await evaluateAcceptance({
+			acceptance,
+			output: report({ diffSummary: "Patched the bug in src/file.ts." }),
+			cwd,
+		});
+		assert.equal(structured.status, "checked");
 	}));
 
 	it("checked acceptance rejects not-satisfied required criteria", async () => withTempRepo(async (cwd) => {

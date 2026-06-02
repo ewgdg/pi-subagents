@@ -4,6 +4,7 @@ import type {
 	ResolvedAcceptanceConfig,
 } from "../../shared/types.ts";
 import { acceptanceFailureMessage } from "./acceptance-evaluation.ts";
+import { formatEvidenceReportFieldMapping } from "./acceptance-contract.ts";
 import { stripAcceptanceReport } from "./acceptance-reports.ts";
 
 const INITIAL_OUTPUT_LIMIT = 8_000;
@@ -42,6 +43,14 @@ export function formatAcceptanceFinalizationPrompt(input: {
 		"",
 		`Required evidence: ${input.acceptance.evidence.join(", ") || "none explicitly requested"}`,
 	];
+	if (input.acceptance.evidence.length > 0) {
+		lines.push(
+			"",
+			"Structured evidence must be present in the final `acceptance-report` JSON fields. Markdown sections in the visible answer do not satisfy required evidence by themselves. If the previous visible output already included the evidence, copy or summarize it into the matching JSON field.",
+			"Evidence field mapping:",
+			...formatEvidenceReportFieldMapping(input.acceptance.evidence),
+		);
+	}
 	if (input.acceptance.verify.length > 0) {
 		lines.push("", "Runtime verification commands that must pass:", ...input.acceptance.verify.map((command) => `- ${command.id}: ${command.command}`));
 	}
@@ -74,6 +83,9 @@ export function formatAcceptanceFinalizationPrompt(input: {
 			validationOutput: [],
 			residualRisks: [],
 			noStagedFiles: true,
+			diffSummary: "concise summary of changed behavior and important files",
+			reviewFindings: [],
+			manualNotes: "manual notes or external evidence, if any",
 			notes: "final self-review summary",
 		}, null, 2),
 		"```",
