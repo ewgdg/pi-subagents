@@ -17,7 +17,8 @@ function parentToolEnv(): NodeJS.ProcessEnv {
 describe("subagent extension child mode", () => {
 	it("collapses tool detail before direct subagent tool execution", () => {
 		const script = String.raw`
-			import registerSubagentExtension from "./src/extension/index.ts";
+			import registerSubagentExtensionModule from "./src/extension/index.ts";
+			const registerSubagentExtension = registerSubagentExtensionModule.default ?? registerSubagentExtensionModule;
 			const events = { on() { return () => {}; }, emit() {} };
 			let registeredTool;
 			const fakePi = new Proxy({
@@ -56,7 +57,8 @@ describe("subagent extension child mode", () => {
 		execFileSync(
 			process.execPath,
 			[
-				"--experimental-transform-types",
+				"--import",
+				"jiti/register",
 				"--import",
 				"./test/support/register-loader.mjs",
 				"--input-type=module",
@@ -69,7 +71,8 @@ describe("subagent extension child mode", () => {
 
 	it("does not show async badge for explicit foreground clarify chain calls", () => {
 		const script = String.raw`
-			import registerSubagentExtension from "./src/extension/index.ts";
+			import registerSubagentExtensionModule from "./src/extension/index.ts";
+			const registerSubagentExtension = registerSubagentExtensionModule.default ?? registerSubagentExtensionModule;
 			const events = { on() { return () => {}; }, emit() {} };
 			let registeredTool;
 			const fakePi = new Proxy({
@@ -98,7 +101,8 @@ describe("subagent extension child mode", () => {
 		execFileSync(
 			process.execPath,
 			[
-				"--experimental-transform-types",
+				"--import",
+				"jiti/register",
 				"--import",
 				"./test/support/register-loader.mjs",
 				"--input-type=module",
@@ -111,10 +115,10 @@ describe("subagent extension child mode", () => {
 
 	it("returns before registering anything for non-fanout children", () => {
 		const script = String.raw`
-			import registerSubagentExtension from "./src/extension/index.ts";
-			import { SUBAGENT_CHILD_ENV, SUBAGENT_FANOUT_CHILD_ENV } from "./src/runs/shared/pi-args.ts";
-			process.env[SUBAGENT_CHILD_ENV] = "1";
-			process.env[SUBAGENT_FANOUT_CHILD_ENV] = "0";
+			import registerSubagentExtensionModule from "./src/extension/index.ts";
+			const registerSubagentExtension = registerSubagentExtensionModule.default ?? registerSubagentExtensionModule;
+			process.env.PI_SUBAGENT_CHILD = "1";
+			process.env.PI_SUBAGENT_FANOUT_CHILD = "0";
 			const calls = [];
 			const fakePi = new Proxy({}, {
 				get(_target, prop) {
@@ -133,7 +137,8 @@ describe("subagent extension child mode", () => {
 		execFileSync(
 			process.execPath,
 			[
-				"--experimental-transform-types",
+				"--import",
+				"jiti/register",
 				"--import",
 				"./test/support/register-loader.mjs",
 				"--input-type=module",
@@ -144,21 +149,15 @@ describe("subagent extension child mode", () => {
 		);
 	});
 
-	it("registers only the child-safe subagent tool for fanout children", () => {
+	it("returns before registering anything for fanout children through the main extension", () => {
 		const script = String.raw`
-			import registerSubagentExtension from "./src/extension/index.ts";
-			import { SUBAGENT_CHILD_ENV, SUBAGENT_FANOUT_CHILD_ENV } from "./src/runs/shared/pi-args.ts";
-			process.env[SUBAGENT_CHILD_ENV] = "1";
-			process.env[SUBAGENT_FANOUT_CHILD_ENV] = "1";
+			import registerSubagentExtensionModule from "./src/extension/index.ts";
+			const registerSubagentExtension = registerSubagentExtensionModule.default ?? registerSubagentExtensionModule;
+			process.env.PI_SUBAGENT_CHILD = "1";
+			process.env.PI_SUBAGENT_FANOUT_CHILD = "1";
 			const calls = [];
-			let registeredTool;
-			const fakePi = new Proxy({
-				events: { on() { calls.push("events.on"); return () => {}; }, emit() { calls.push("events.emit"); } },
-				registerTool(tool) { calls.push("registerTool"); registeredTool = tool; },
-				getSessionName() { return undefined; },
-			}, {
-				get(target, prop) {
-					if (prop in target) return target[prop];
+			const fakePi = new Proxy({}, {
+				get(_target, prop) {
 					return (..._args) => {
 						calls.push(String(prop));
 						return undefined;
@@ -166,15 +165,16 @@ describe("subagent extension child mode", () => {
 				},
 			});
 			registerSubagentExtension(fakePi);
-			if (!registeredTool || registeredTool.name !== "subagent") throw new Error("child-safe subagent tool not registered");
-			const unexpected = calls.filter((call) => call !== "registerTool");
-			if (unexpected.length > 0) throw new Error("Unexpected parent-surface registrations: " + unexpected.join(", "));
+			if (calls.length > 0) {
+				throw new Error("Unexpected child-mode registrations: " + calls.join(", "));
+			}
 		`;
 
 		execFileSync(
 			process.execPath,
 			[
-				"--experimental-transform-types",
+				"--import",
+				"jiti/register",
 				"--import",
 				"./test/support/register-loader.mjs",
 				"--input-type=module",
@@ -187,10 +187,10 @@ describe("subagent extension child mode", () => {
 
 	it("lets fanout children call read-only list but blocks mutating management actions", () => {
 		const script = String.raw`
-			import registerFanoutChildSubagentExtension from "./src/extension/fanout-child.ts";
-			import { SUBAGENT_CHILD_ENV, SUBAGENT_FANOUT_CHILD_ENV } from "./src/runs/shared/pi-args.ts";
-			process.env[SUBAGENT_CHILD_ENV] = "1";
-			process.env[SUBAGENT_FANOUT_CHILD_ENV] = "1";
+			import registerFanoutChildSubagentExtensionModule from "./src/extension/fanout-child.ts";
+			const registerFanoutChildSubagentExtension = registerFanoutChildSubagentExtensionModule.default ?? registerFanoutChildSubagentExtensionModule;
+			process.env.PI_SUBAGENT_CHILD = "1";
+			process.env.PI_SUBAGENT_FANOUT_CHILD = "1";
 			let registeredTool;
 			const fakePi = {
 				events: { on() { return () => {}; }, emit() {} },
@@ -216,7 +216,8 @@ describe("subagent extension child mode", () => {
 		execFileSync(
 			process.execPath,
 			[
-				"--experimental-transform-types",
+				"--import",
+				"jiti/register",
 				"--import",
 				"./test/support/register-loader.mjs",
 				"--input-type=module",

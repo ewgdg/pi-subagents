@@ -596,6 +596,8 @@ function listFilesRecursive(dir: string, predicate: (fileName: string) => boolea
 	for (const entry of entries) {
 		const filePath = path.join(dir, entry.name);
 		if (entry.isDirectory()) {
+			// Agent discovery scans legacy ~/.agents recursively; do not load skill docs as agents.
+			if (entry.name === "skills") continue;
 			files.push(...listFilesRecursive(filePath, predicate));
 			continue;
 		}
