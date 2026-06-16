@@ -6,7 +6,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { type AgentConfig, type AgentScope } from "../../agents/agents.ts";
 import { getArtifactsDir } from "../../shared/artifacts.ts";
 import { ChainClarifyComponent, type ChainClarifyResult } from "./chain-clarify.ts";
-import { toModelInfo, type ModelInfo } from "../../shared/model-info.ts";
+import { currentModelFullId, toModelInfo, type ModelInfo } from "../../shared/model-info.ts";
 import { executeChain } from "./chain-execution.ts";
 import { resolveExecutionAgentScope } from "../../agents/agent-scope.ts";
 import { handleManagementAction } from "../../agents/agent-management.ts";
@@ -1138,6 +1138,7 @@ function runAsyncPath(data: ExecutionContextData, deps: ExecutorDeps): AgentTool
 		cwd: ctx.cwd,
 		currentSessionId: deps.state.currentSessionId!,
 		currentModelProvider: ctx.model?.provider,
+		currentModel: currentModelFullId(ctx.model),
 	};
 	const availableModels: ModelInfo[] = ctx.modelRegistry.getAvailable().map(toModelInfo);
 	const currentMaxSubagentDepth = resolveCurrentMaxSubagentDepth(deps.config.maxSubagentDepth);
@@ -1337,6 +1338,7 @@ async function runChainPath(data: ExecutionContextData, deps: ExecutorDeps): Pro
 			cwd: ctx.cwd,
 			currentSessionId: deps.state.currentSessionId!,
 			currentModelProvider: ctx.model?.provider,
+			currentModel: currentModelFullId(ctx.model),
 		};
 		const asyncChain = wrapChainTasksForFork(chainResult.requestedAsync.chain, params.context);
 		return executeAsyncChain(id, {
@@ -1580,6 +1582,7 @@ async function runForegroundParallelTasks(input: ForegroundParallelRunInput): Pr
 			modelOverride: input.modelOverrides[index],
 			availableModels: input.availableModels,
 			preferredModelProvider: input.ctx.model?.provider,
+			parentModel: currentModelFullId(input.ctx.model),
 			skills: effectiveSkills === false ? [] : effectiveSkills,
 			acceptance: task.acceptance,
 			acceptanceContext: { mode: "parallel" },
@@ -1758,6 +1761,7 @@ async function runParallelPath(data: ExecutionContextData, deps: ExecutorDeps): 
 				cwd: ctx.cwd,
 				currentSessionId: deps.state.currentSessionId!,
 				currentModelProvider: ctx.model?.provider,
+				currentModel: currentModelFullId(ctx.model),
 			};
 			const parallelTasks = tasks.map((t, i) => {
 				const taskText = params.context === "fork" ? wrapForkTask(taskTexts[i]!) : taskTexts[i]!;
@@ -2048,6 +2052,7 @@ async function runSinglePath(data: ExecutionContextData, deps: ExecutorDeps): Pr
 				cwd: ctx.cwd,
 				currentSessionId: deps.state.currentSessionId!,
 				currentModelProvider: ctx.model?.provider,
+				currentModel: currentModelFullId(ctx.model),
 			};
 			return executeAsyncSingle(id, {
 				agent: params.agent!,
@@ -2159,6 +2164,7 @@ async function runSinglePath(data: ExecutionContextData, deps: ExecutorDeps): Pr
 		modelOverride,
 		availableModels,
 		preferredModelProvider: currentProvider,
+		parentModel: currentModelFullId(ctx.model),
 		skills: effectiveSkills,
 		acceptance: params.acceptance,
 		acceptanceContext: { mode: "single" },

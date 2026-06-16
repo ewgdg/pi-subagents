@@ -8,7 +8,7 @@ import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { AgentConfig } from "../../agents/agents.ts";
 import { ChainClarifyComponent, type ChainClarifyResult, type BehaviorOverride } from "./chain-clarify.ts";
-import { toModelInfo, type ModelInfo } from "../../shared/model-info.ts";
+import { currentModelFullId, toModelInfo, type ModelInfo } from "../../shared/model-info.ts";
 import {
 	resolveChainTemplates,
 	createChainDir,
@@ -290,6 +290,7 @@ async function runParallelChainTasks(input: ParallelChainRunInput): Promise<Sing
 				modelOverride: effectiveModel,
 				availableModels: input.availableModels,
 				preferredModelProvider: input.ctx.model?.provider,
+				parentModel: currentModelFullId(input.ctx.model),
 				skills: behavior.skills === false ? [] : behavior.skills,
 				structuredOutput: structuredRuntime,
 				acceptance: task.acceptance,
@@ -1066,6 +1067,7 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 				modelOverride: effectiveModel,
 				availableModels,
 				preferredModelProvider: ctx.model?.provider,
+				parentModel: currentModelFullId(ctx.model),
 				skills: behavior.skills === false ? [] : behavior.skills,
 				structuredOutput: structuredRuntime,
 				acceptance: seqStep.acceptance,

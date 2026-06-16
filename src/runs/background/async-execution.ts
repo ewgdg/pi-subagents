@@ -95,6 +95,7 @@ interface AsyncExecutionContext {
 	cwd: string;
 	currentSessionId: string;
 	currentModelProvider?: string;
+	currentModel?: string;
 }
 
 interface AsyncChainParams {
@@ -342,7 +343,15 @@ export function executeAsyncChain(
 		taskTemplate = taskTemplate.replace(/\{chain_dir\}/g, runnerCwd);
 		const task = injectSingleOutputInstruction(`${readInstructions.prefix}${taskTemplate}${progressInstructions.suffix}`, outputPath);
 
-		const primaryModel = resolveModelCandidate(behavior.model ?? a.model, availableModels, ctx.currentModelProvider);
+		const effectiveAcceptance = resolveEffectiveAcceptance({
+			explicit: s.acceptance,
+			agentName: s.agent,
+			task: s.task,
+			mode: resultMode,
+			async: true,
+			dynamic: false,
+		});
+		const primaryModel = resolveModelCandidate(behavior.model ?? a.model ?? (effectiveAcceptance.explicit ? ctx.currentModel : undefined), availableModels, ctx.currentModelProvider);
 		const model = applyThinkingSuffix(primaryModel, a.thinking);
 		return {
 			agent: s.agent,
@@ -354,7 +363,7 @@ export function executeAsyncChain(
 			cwd: stepCwd,
 			model,
 			thinking: resolveEffectiveThinking(model, a.thinking),
-			modelCandidates: buildModelCandidates(behavior.model ?? a.model, a.fallbackModels, availableModels, ctx.currentModelProvider).map((candidate) =>
+			modelCandidates: buildModelCandidates(behavior.model ?? a.model ?? (effectiveAcceptance.explicit ? ctx.currentModel : undefined), a.fallbackModels, availableModels, ctx.currentModelProvider).map((candidate) =>
 				applyThinkingSuffix(candidate, a.thinking),
 			),
 			tools: a.tools,
@@ -372,14 +381,7 @@ export function executeAsyncChain(
 			maxSubagentDepth: resolveChildMaxSubagentDepth(maxSubagentDepth, a.maxSubagentDepth),
 			maxExecutionTimeMs: a.maxExecutionTimeMs,
 			maxTokens: a.maxTokens,
-			effectiveAcceptance: resolveEffectiveAcceptance({
-				explicit: s.acceptance,
-				agentName: s.agent,
-				task: s.task,
-				mode: resultMode,
-				async: true,
-				dynamic: false,
-			}),
+			effectiveAcceptance,
 			...(s.outputSchema ? { structuredOutputSchema: s.outputSchema } : {}),
 			...(s.outputSchema ? { structuredOutput: createStructuredOutputRuntime(s.outputSchema, path.join(asyncDir, "structured-output")) } : {}),
 		};
@@ -659,8 +661,16 @@ export function executeAsyncSingle(
 	const validationError = validateFileOnlyOutputMode(outputMode, outputPath, `Async single run (${agent})`);
 	if (validationError) return formatAsyncStartError("single", validationError);
 	const taskWithOutputInstruction = injectSingleOutputInstruction(task, outputPath);
+	const effectiveAcceptance = resolveEffectiveAcceptance({
+		explicit: params.acceptance,
+		agentName: agent,
+		task,
+		mode: "single",
+		async: true,
+	});
+	const primaryModel = params.modelOverride ?? agentConfig.model ?? (effectiveAcceptance.explicit ? ctx.currentModel : undefined);
 	const model = applyThinkingSuffix(
-		resolveModelCandidate(params.modelOverride ?? agentConfig.model, availableModels, ctx.currentModelProvider),
+		resolveModelCandidate(primaryModel, availableModels, ctx.currentModelProvider),
 		agentConfig.thinking,
 	);
 	let spawnResult: { pid?: number; error?: string } = {};
@@ -675,7 +685,7 @@ export function executeAsyncSingle(
 						cwd: runnerCwd,
 						model,
 						thinking: resolveEffectiveThinking(model, agentConfig.thinking),
-						modelCandidates: buildModelCandidates(params.modelOverride ?? agentConfig.model, agentConfig.fallbackModels, availableModels, ctx.currentModelProvider).map((candidate) =>
+						modelCandidates: buildModelCandidates(primaryModel, agentConfig.fallbackModels, availableModels, ctx.currentModelProvider).map((candidate) =>
 							applyThinkingSuffix(candidate, agentConfig.thinking),
 						),
 						tools: agentConfig.tools,
@@ -693,13 +703,7 @@ export function executeAsyncSingle(
 						maxSubagentDepth: resolveChildMaxSubagentDepth(maxSubagentDepth, agentConfig.maxSubagentDepth),
 						maxExecutionTimeMs: agentConfig.maxExecutionTimeMs,
 						maxTokens: agentConfig.maxTokens,
-						effectiveAcceptance: resolveEffectiveAcceptance({
-							explicit: params.acceptance,
-							agentName: agent,
-							task,
-							mode: "single",
-							async: true,
-						}),
+						effectiveAcceptance,
 					},
 				],
 				resultPath: inheritedNestedRoute ? nestedResultsPath(inheritedNestedRoute.rootRunId, id) : path.join(RESULTS_DIR, `${id}.json`),

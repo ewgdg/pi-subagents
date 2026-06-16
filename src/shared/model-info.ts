@@ -17,6 +17,16 @@ interface RegistryModelLike {
 	thinkingLevelMap?: ThinkingLevelMap;
 }
 
+interface CurrentModelLike {
+	provider?: unknown;
+	id?: unknown;
+}
+
+export function currentModelFullId(model: CurrentModelLike | undefined): string | undefined {
+	if (!model || typeof model.provider !== "string" || typeof model.id !== "string") return undefined;
+	return `${model.provider}/${model.id}`;
+}
+
 export function toModelInfo(model: RegistryModelLike): ModelInfo {
 	return {
 		provider: model.provider,

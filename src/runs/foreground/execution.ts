@@ -985,7 +985,7 @@ async function runAcceptanceFinalizationLoop(input: {
 			input.runtimeCwd,
 			input.agent,
 			prompt,
-			input.result.model,
+			input.result.model ?? input.options.modelOverride ?? input.agent.model ?? input.options.parentModel,
 			finalizationOptions,
 			{
 				sessionEnabled: true,
@@ -1113,8 +1113,9 @@ export async function runSync(
 		systemPrompt = systemPrompt ? `${systemPrompt}\n\n${skillInjection}` : skillInjection;
 	}
 
+	const primaryModel = options.modelOverride ?? agent.model ?? (effectiveAcceptance.explicit ? options.parentModel : undefined);
 	const candidates = buildModelCandidates(
-		options.modelOverride ?? agent.model,
+		primaryModel,
 		agent.fallbackModels,
 		options.availableModels,
 		options.preferredModelProvider,

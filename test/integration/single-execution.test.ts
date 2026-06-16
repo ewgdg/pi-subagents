@@ -498,6 +498,45 @@ describe("single sync execution", { skip: !available ? "pi packages not availabl
 		assert.equal(result.model, "openai/gpt-4o");
 	});
 
+	it("uses the parent model for explicit acceptance when no child model is configured", async () => {
+		mockPi.onCall({ output: "Done" });
+		mockPi.onCall({ output: "Finalized" });
+		const agents = makeAgentConfigs(["echo"]);
+
+		const result = await runSync(tempDir, agents, "echo", "Task", {
+			parentModel: "openai-codex/gpt-5.5",
+			acceptance: { criteria: ["Task completed"] },
+		});
+
+		assert.equal(result.exitCode, 0);
+		assert.equal(result.model, "openai-codex/gpt-5.5");
+		const callArgs = fs.readdirSync(mockPi.dir)
+			.filter((name) => name.startsWith("call-"))
+			.map((name) => JSON.parse(fs.readFileSync(path.join(mockPi.dir, name), "utf-8")).args as string[]);
+		assert.equal(callArgs.length, 2);
+		for (const args of callArgs) {
+			const modelIndex = args.indexOf("--model");
+			assert.notEqual(modelIndex, -1);
+			assert.equal(args[modelIndex + 1], "openai-codex/gpt-5.5");
+		}
+	});
+
+	it("does not force the parent model without explicit acceptance", async () => {
+		mockPi.onCall({ output: "Done" });
+		const agents = makeAgentConfigs(["echo"]);
+
+		const result = await runSync(tempDir, agents, "echo", "Task", {
+			parentModel: "openai-codex/gpt-5.5",
+		});
+
+		assert.equal(result.exitCode, 0);
+		const callArgs = fs.readdirSync(mockPi.dir)
+			.filter((name) => name.startsWith("call-"))
+			.map((name) => JSON.parse(fs.readFileSync(path.join(mockPi.dir, name), "utf-8")).args as string[]);
+		assert.equal(callArgs.length, 1);
+		assert.equal(callArgs[0]!.includes("--model"), false);
+	});
+
 	it("prefers the parent session provider for ambiguous bare model ids", async () => {
 		mockPi.onCall({ output: "Done" });
 		const agents = [makeAgent("echo", { model: "gpt-5-mini" })];
