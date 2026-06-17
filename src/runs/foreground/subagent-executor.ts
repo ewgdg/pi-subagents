@@ -2470,9 +2470,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 		const effectiveAsync = requestedAsync && effectiveParams.clarify !== true;
 		const foregroundTimeout = resolveForegroundTimeoutMs(effectiveParams);
 		if (foregroundTimeout.error) return buildRequestedModeError(effectiveParams, foregroundTimeout.error);
-		if (effectiveAsync && foregroundTimeout.timeoutMs !== undefined) {
-			return buildRequestedModeError(effectiveParams, "timeoutMs/maxRuntimeMs only applies to foreground subagent runs. Omit async:true or use action:'interrupt' for background runs.");
-		}
+		const effectiveForegroundTimeout: { timeoutMs?: number } = effectiveAsync ? {} : foregroundTimeout;
 		const controlConfig = resolveControlConfig(deps.config.control, effectiveParams.control);
 
 		const artifactConfig: ArtifactConfig = {
@@ -2524,7 +2522,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 			artifactsDir,
 			backgroundRequestedWhileClarifying,
 			effectiveAsync,
-			...(foregroundTimeout.timeoutMs !== undefined ? { foregroundTimeoutMs: foregroundTimeout.timeoutMs } : {}),
+			...(effectiveForegroundTimeout.timeoutMs !== undefined ? { foregroundTimeoutMs: effectiveForegroundTimeout.timeoutMs } : {}),
 			controlConfig,
 			intercomBridge,
 			nestedRoute,

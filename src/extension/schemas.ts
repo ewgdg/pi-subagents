@@ -221,7 +221,16 @@ const ControlOverrides = Type.Object({
 	})),
 });
 
-export const SubagentParams = Type.Object({
+function foregroundTimeoutDescription(asyncByDefault: boolean): string {
+	const usage = asyncByDefault
+		? "Ignored unless explicitly setting async:false."
+		: "Only applies to foreground runs. Async/background runs ignore this field.";
+	return `${usage} When it expires, running children are soft-interrupted and timed-out results are returned.`;
+}
+
+export function createSubagentParamsSchema(options: { asyncByDefault?: boolean } = {}) {
+	const asyncByDefault = options.asyncByDefault === true;
+	return Type.Object({
 	agent: Type.Optional(Type.String({ description: "Agent name (SINGLE mode) or target for management get/update/delete" })),
 	task: Type.Optional(Type.String({ description: "Task (SINGLE mode, optional for self-contained agents)" })),
 	// Management action (when present, tool operates in management mode)
@@ -254,7 +263,7 @@ export const SubagentParams = Type.Object({
 	})),
 	tasks: Type.Optional(Type.Array(TaskItem, { description: "PARALLEL mode: [{agent, task, count?, output?, outputMode?, reads?, progress?}, ...]" })),
 	concurrency: Type.Optional(Type.Integer({ minimum: 1, description: "Top-level PARALLEL mode only: max concurrent tasks. Defaults to config.parallel.concurrency or 4." })),
-	timeoutMs: Type.Optional(Type.Integer({ minimum: 1, description: "Foreground execution wall-clock timeout in milliseconds. When it expires, running children are soft-interrupted and timed-out results are returned. Foreground only; async/background runs ignore this field." })),
+	timeoutMs: Type.Optional(Type.Integer({ minimum: 1, description: foregroundTimeoutDescription(asyncByDefault) })),
 	maxRuntimeMs: Type.Optional(Type.Integer({ minimum: 1, description: "Alias for timeoutMs. Use only one unless both values are identical." })),
 	worktree: Type.Optional(Type.Boolean({
 		description: "Create isolated git worktrees for each parallel task. " +
@@ -292,3 +301,6 @@ export const SubagentParams = Type.Object({
 	model: Type.Optional(Type.String({ description: "Override model for single agent (e.g. 'anthropic/claude-sonnet-4')" })),
 	acceptance: Type.Optional(AcceptanceOverride),
 });
+}
+
+export const SubagentParams = createSubagentParamsSchema();

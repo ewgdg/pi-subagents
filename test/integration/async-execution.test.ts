@@ -302,6 +302,40 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		assert.equal(status.steps?.[0]?.resourceLimitExceeded?.kind, "maxTokens");
 	});
 
+	it("async execution ignores foreground timeout aliases", { skip: !isAsyncAvailable() || !createSubagentExecutor ? "jiti or executor not available" : undefined }, async () => {
+		mockPi.onCall({ output: "Async timeout ignored" });
+		const executor = createSubagentExecutor!({
+			pi: { events: createEventBus(), getSessionName: () => undefined },
+			state: { baseCwd: tempDir, currentSessionId: null, asyncJobs: new Map(), foregroundControls: new Map(), lastForegroundControlId: null },
+			config: {},
+			asyncByDefault: false,
+			tempArtifactsDir: tempDir,
+			getSubagentSessionRoot: () => tempDir,
+			expandTilde: (p: string) => p,
+			discoverAgents: () => ({ agents: [makeAgent("worker")] }),
+		});
+
+		const result = await executor.execute(
+			"async-timeout-ignored",
+			{ agent: "worker", task: "Do async work", async: true, timeoutMs: 250, clarify: false },
+			new AbortController().signal,
+			undefined,
+			makeMinimalCtx(tempDir),
+		);
+
+		assert.equal(result.isError, undefined);
+		const asyncId = result.details?.asyncId;
+		assert.ok(asyncId, "expected asyncId");
+		const resultPath = path.join(RESULTS_DIR, `${asyncId}.json`);
+		const deadline = Date.now() + 10_000;
+		while (!fs.existsSync(resultPath)) {
+			if (Date.now() > deadline) assert.fail(`Timed out waiting for async result file: ${resultPath}`);
+			await new Promise((resolve) => setTimeout(resolve, 100));
+		}
+		const payload = JSON.parse(fs.readFileSync(resultPath, "utf-8")) as AsyncResultPayload;
+		assert.equal(payload.success, true);
+	});
+
 	it("top-level async parallel conversion preserves output, reads, and progress", { skip: !isAsyncAvailable() || !createSubagentExecutor ? "jiti or executor not available" : undefined }, async () => {
 		mockPi.onCall({ output: "Async top-level report" });
 		const executor = createSubagentExecutor!({

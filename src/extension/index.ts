@@ -23,7 +23,7 @@ import { cleanupAllArtifactDirs, cleanupOldArtifacts, getArtifactsDir } from "..
 import { resolveCurrentSessionId } from "../shared/session-identity.ts";
 import { cleanupOldChainDirs } from "../shared/settings.ts";
 import { clearLegacyResultAnimationTimer, renderWidget, renderSubagentResult } from "../tui/render.ts";
-import { SubagentParams } from "./schemas.ts";
+import { SubagentParams, createSubagentParamsSchema } from "./schemas.ts";
 import { createSubagentExecutor, type SubagentParamsLike } from "../runs/foreground/subagent-executor.ts";
 import { createAsyncJobTracker } from "../runs/background/async-job-tracker.ts";
 import { createResultWatcher } from "../runs/background/result-watcher.ts";
@@ -385,6 +385,11 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		}, 0);
 	}
 
+	const subagentParams = createSubagentParamsSchema({ asyncByDefault });
+	const foregroundTimeoutHelp = asyncByDefault
+		? "• Default execution is async/background. Do not pass timeoutMs/maxRuntimeMs unless also setting async:false. Async/background runs ignore these fields."
+		: "• Foreground timeout: { timeoutMs } or { maxRuntimeMs } - wall-clock limit for foreground single, parallel, and chain runs. Timed-out children return timedOut:true with completed sibling/prior results preserved. Async/background runs ignore these fields.";
+
 	const tool: ToolDefinition<typeof SubagentParams, Details> = {
 		name: "subagent",
 		label: "Subagent",
@@ -395,7 +400,7 @@ EXECUTION (use exactly ONE mode):
 • SINGLE: { agent, task? } - one task; omit task for self-contained agents
 • CHAIN: { chain: [{agent:"agent-a"}, {parallel:[{agent:"agent-b",count:3}]}] } - sequential pipeline with optional parallel fan-out
 • PARALLEL: { tasks: [{agent,task,count?,output?,reads?,progress?}, ...], concurrency?: number, worktree?: true } - concurrent execution (worktree: isolate each task in a git worktree)
-• Foreground timeout: { timeoutMs } or { maxRuntimeMs } - wall-clock limit for foreground single, parallel, and chain runs. Timed-out children return timedOut:true with completed sibling/prior results preserved. Not for async/background runs.
+${foregroundTimeoutHelp}
 • Optional context: { context: "fresh" | "fork" } (default: if any requested agent has defaultContext: "fork", the whole invocation uses fork; otherwise "fresh"; inspect agent defaults via { action: "list" })
 • Goal-style requests: when the user says “/goal”, “goal”, “active goal”, “work until evidence says done”, or “verify against a goal”, model that as explicit acceptance. Use acceptance.criteria for the target, acceptance.evidence/verify for proof, acceptance.stopRules for constraints, and acceptance.maxFinalizationTurns for the bounded loop.
 • Plan/spec implementation handoffs: when delegating a plan, PRD, spec, issue, or broad fix to an editing-capable child, prefer structured acceptance instead of burying validation requirements in task prose. Put the implementation instructions and plan paths in task; put the definition of done, evidence, verification commands, constraints, and loop cap in acceptance.
@@ -422,7 +427,7 @@ CONTROL:
 
 DIAGNOSTICS:
 • { action: "doctor" } - read-only report for runtime paths, discovery, sessions, and intercom`,
-		parameters: SubagentParams,
+		parameters: subagentParams,
 
 		execute(id, params, signal, onUpdate, ctx) {
 			return executeSubagentCollapsed(id, params, signal, onUpdate, ctx);

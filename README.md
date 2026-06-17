@@ -797,7 +797,7 @@ Agent definitions are not loaded into context by default. Management actions let
 | `model` | string | agent default | Override model. |
 | `tasks` | array | - | Top-level parallel tasks. Supports `agent`, `task`, `cwd`, `count`, `output`, `outputMode`, `reads`, `progress`, `skill`, `model`, and `acceptance`. |
 | `concurrency` | number | config or `4` | Top-level parallel concurrency. |
-| `timeoutMs` / `maxRuntimeMs` | number | - | Foreground wall-clock timeout for single, parallel, and chain runs. Timed-out children return `timedOut: true`; async/background runs reject it. |
+| `timeoutMs` / `maxRuntimeMs` | number | - | Foreground wall-clock timeout for single, parallel, and chain runs. Use with `async:false` when async-by-default is enabled. Timed-out children return `timedOut: true`; async/background runs ignore it. |
 | `worktree` | boolean | false | Create isolated git worktrees for parallel tasks. |
 | `chain` | array | - | Sequential, static parallel, and dynamic fanout chain steps. Sequential steps and parallel child tasks support `phase`, `label`, `as`, `outputSchema`, and `acceptance` in addition to the usual execution fields. Dynamic fanout uses `expand`, one child `parallel` template, and `collect`; group-level acceptance is not supported because there is no child session to finalize. |
 | `context` | `fresh \| fork` | agent default or `fresh` | `fork` creates real branched sessions from the parent leaf. Packaged `planner`, `worker`, and `oracle` default to `fork`. |

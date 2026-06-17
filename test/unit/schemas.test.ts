@@ -102,10 +102,12 @@ function isRequiredOnlySchema(value: unknown): boolean {
 
 let schemas: Record<string, JsonSchemaNode> = {};
 let SubagentParams: SubagentParamsSchema | undefined;
+let createSubagentParamsSchema: ((options?: { asyncByDefault?: boolean }) => SubagentParamsSchema) | undefined;
 let schemasAvailable = true;
 try {
 	schemas = await import("../../src/extension/schemas.ts") as Record<string, JsonSchemaNode>;
 	SubagentParams = schemas.SubagentParams as SubagentParamsSchema;
+	createSubagentParamsSchema = schemas.createSubagentParamsSchema as unknown as typeof createSubagentParamsSchema;
 } catch (error) {
 	if (missingPackageName(error) !== "typebox") throw error;
 	schemasAvailable = false;
@@ -158,12 +160,23 @@ describe("SubagentParams schema", { skip: !schemasAvailable ? "typebox not avail
 		assert.ok(timeoutSchema, "timeoutMs schema should exist");
 		assert.equal(timeoutSchema.minimum, 1);
 		assert.match(String(timeoutSchema.description ?? ""), /foreground/i);
+		assert.match(String(timeoutSchema.description ?? ""), /Async\/background runs ignore this field/i);
 		assert.match(String(timeoutSchema.description ?? ""), /soft-interrupted/i);
 
 		const maxRuntimeSchema = SubagentParams?.properties?.maxRuntimeMs;
 		assert.ok(maxRuntimeSchema, "maxRuntimeMs schema should exist");
 		assert.equal(maxRuntimeSchema.minimum, 1);
 		assert.match(String(maxRuntimeSchema.description ?? ""), /alias/i);
+	});
+
+	it("describes timeout as async:false-only when async is default while keeping maxRuntime as a plain alias", () => {
+		assert.ok(createSubagentParamsSchema, "schema factory should exist");
+		const asyncDefaultParams = createSubagentParamsSchema({ asyncByDefault: true });
+		const timeoutDescription = String(asyncDefaultParams.properties?.timeoutMs?.description ?? "");
+		const maxRuntimeDescription = String(asyncDefaultParams.properties?.maxRuntimeMs?.description ?? "");
+		assert.match(timeoutDescription, /Ignored unless explicitly setting async:false/);
+		assert.match(timeoutDescription, /soft-interrupted/);
+		assert.equal(maxRuntimeDescription, "Alias for timeoutMs. Use only one unless both values are identical.");
 	});
 
 	it("uses an enum for management and control actions", () => {
