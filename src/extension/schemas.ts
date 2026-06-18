@@ -35,6 +35,10 @@ const ReadsOverride = Type.Unsafe({
 	description: "Files to read before running (array of filenames), or false to disable",
 });
 
+const ThinkingOverride = Type.String({
+	description: "Override thinking level for the effective model. Provider-specific string. Common values: off, low, medium, high. Compatible with model ':level' suffixes; this explicit field wins and 'off' strips known suffixes.",
+});
+
 const JsonSchemaObject = Type.Unsafe({
 	type: "object",
 	additionalProperties: true,
@@ -109,6 +113,7 @@ const TaskItem = Type.Object({
 	reads: Type.Optional(ReadsOverride),
 	progress: Type.Optional(Type.Boolean({ description: "Enable progress.md tracking for this task" })),
 	model: Type.Optional(Type.String({ description: "Override model for this task (e.g. 'google/gemini-3-pro')" })),
+	thinking: Type.Optional(ThinkingOverride),
 	skill: Type.Optional(SkillOverride),
 	acceptance: Type.Optional(AcceptanceOverride),
 });
@@ -129,6 +134,7 @@ const ParallelTaskSchema = Type.Object({
 	progress: Type.Optional(Type.Boolean({ description: "Enable progress.md tracking in {chain_dir}" })),
 	skill: Type.Optional(SkillOverride),
 	model: Type.Optional(Type.String({ description: "Override model for this task" })),
+	thinking: Type.Optional(ThinkingOverride),
 	acceptance: Type.Optional(AcceptanceOverride),
 });
 
@@ -156,6 +162,7 @@ const DynamicParallelTemplateSchema = Type.Object({
 	progress: Type.Optional(Type.Boolean({ description: "Enable progress.md tracking in {chain_dir}" })),
 	skill: Type.Optional(SkillOverride),
 	model: Type.Optional(Type.String({ description: "Override model for this task" })),
+	thinking: Type.Optional(ThinkingOverride),
 	acceptance: Type.Optional(AcceptanceOverride),
 }, { additionalProperties: false });
 
@@ -181,6 +188,7 @@ const ChainItem = Type.Object({
 	progress: Type.Optional(Type.Boolean({ description: "Enable progress.md tracking in {chain_dir}" })),
 	skill: Type.Optional(SkillOverride),
 	model: Type.Optional(Type.String({ description: "Override model for this step" })),
+	thinking: Type.Optional(ThinkingOverride),
 	acceptance: Type.Optional(AcceptanceOverride),
 	parallel: Type.Optional(Type.Unsafe({
 		anyOf: [
@@ -259,12 +267,11 @@ export function createSubagentParamsSchema(options: { asyncByDefault?: boolean }
 			{ type: "object", additionalProperties: true },
 			{ type: "string" },
 		],
-		description: "Agent or chain config for create/update. Agent: name, package (optional namespace; runtime name becomes package.name), description, scope ('user'|'project', default 'user'), systemPrompt, systemPromptMode, inheritProjectContext, inheritSkills, defaultContext ('fresh'|'fork'), model, tools (comma-separated), extensions (comma-separated), skills (comma-separated), thinking, output, reads, progress, maxSubagentDepth, maxExecutionTimeMs, maxTokens. Chain: name, package, description, scope, steps (array of {agent, task?, output?, outputMode?, reads?, model?, skill?, progress?}). Presence of 'steps' creates a chain instead of an agent. String values must be valid JSON."
+		description: "Agent or chain config for create/update. Agent: name, package (optional namespace; runtime name becomes package.name), description, scope ('user'|'project', default 'user'), systemPrompt, systemPromptMode, inheritProjectContext, inheritSkills, defaultContext ('fresh'|'fork'), model, tools (comma-separated), extensions (comma-separated), skills (comma-separated), thinking, output, reads, progress, maxSubagentDepth, maxExecutionTimeMs, maxTokens. Chain: name, package, description, scope, steps (array of {agent, task?, output?, outputMode?, reads?, model?, thinking?, skill?, progress?}). Presence of 'steps' creates a chain instead of an agent. String values must be valid JSON."
 	})),
 	tasks: Type.Optional(Type.Array(TaskItem, { description: "PARALLEL mode: [{agent, task, count?, output?, outputMode?, reads?, progress?}, ...]" })),
 	concurrency: Type.Optional(Type.Integer({ minimum: 1, description: "Top-level PARALLEL mode only: max concurrent tasks. Defaults to config.parallel.concurrency or 4." })),
 	timeoutMs: Type.Optional(Type.Integer({ minimum: 1, description: foregroundTimeoutDescription(asyncByDefault) })),
-	maxRuntimeMs: Type.Optional(Type.Integer({ minimum: 1, description: "Alias for timeoutMs. Use only one unless both values are identical." })),
 	worktree: Type.Optional(Type.Boolean({
 		description: "Create isolated git worktrees for each parallel task. " +
 			"Prevents filesystem conflicts. Requires clean git state. " +
@@ -299,6 +306,7 @@ export function createSubagentParamsSchema(options: { asyncByDefault?: boolean }
 	outputMode: Type.Optional(OutputModeOverride),
 	skill: Type.Optional(SkillOverride),
 	model: Type.Optional(Type.String({ description: "Override model for single agent (e.g. 'anthropic/claude-sonnet-4')" })),
+	thinking: Type.Optional(ThinkingOverride),
 	acceptance: Type.Optional(AcceptanceOverride),
 });
 }

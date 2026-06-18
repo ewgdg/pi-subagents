@@ -145,7 +145,7 @@ Use `~/.pi/agent/settings.json` for a user override or `.pi/settings.json` for a
 
 ## Where running subagents show up
 
-Foreground runs stream progress in the conversation while they run. Use `timeoutMs` or its alias `maxRuntimeMs` when a foreground run must return within a wall-clock budget. When the timeout expires, running children are soft-interrupted, completed children stay in the result, and timed-out children return `timedOut: true` with a stable timeout message.
+Foreground runs stream progress in the conversation while they run. Use `timeoutMs` when a foreground run must return within a wall-clock budget. When the timeout expires, running children are soft-interrupted, completed children stay in the result, and timed-out children return `timedOut: true` with a stable timeout message.
 
 Background runs keep working after control returns to you. Inspect active runs with `subagent({ action: "status" })`, or a specific run with `subagent({ action: "status", id: "..." })`.
 
@@ -452,7 +452,7 @@ Important fields:
 | `extensions` | Omitted means normal extensions; empty means no extensions; comma-separated values allowlist specific extensions. |
 | `model` | Default model. Bare ids prefer the current provider when possible, then unique registry matches. |
 | `fallbackModels` | Ordered backup models for provider/model failures such as quota, auth, timeout, or unavailable model. Ordinary task failures do not trigger fallback. |
-| `thinking` | Appended as a `:level` suffix at runtime unless a suffix is already present. |
+| `thinking` | Default thinking level. Appended as a `:level` suffix at runtime unless the model already has a known suffix. |
 | `systemPromptMode` | `replace` by default; `append` keeps Pi’s base prompt. |
 | `inheritProjectContext` | Keeps or strips inherited project instruction blocks. |
 | `inheritSkills` | Keeps or strips Pi’s discovered skills catalog. |
@@ -794,10 +794,11 @@ Agent definitions are not loaded into context by default. Management actions let
 | `output` | `string \| false` | agent default | Override single-agent output file. |
 | `outputMode` | `"inline" \| "file-only"` | `inline` | Return saved output inline or as a concise saved-file reference. `file-only` requires an `output` path. |
 | `skill` | `string \| string[] \| false` | agent default | Override skills or disable all. |
-| `model` | string | agent default | Override model. |
-| `tasks` | array | - | Top-level parallel tasks. Supports `agent`, `task`, `cwd`, `count`, `output`, `outputMode`, `reads`, `progress`, `skill`, `model`, and `acceptance`. |
+| `model` | string | agent default | Override model. Existing `model:level` thinking suffixes still work. |
+| `thinking` | string | agent default | Override provider-specific thinking level for the effective model. Common values are `off`, `low`, `medium`, and `high`. Explicit `thinking` wins over known `model:level` suffixes; `off` strips them. Also supported on top-level tasks, sequential chain steps, chain parallel tasks, and dynamic fanout child templates. |
+| `tasks` | array | - | Top-level parallel tasks. Supports `agent`, `task`, `cwd`, `count`, `output`, `outputMode`, `reads`, `progress`, `skill`, `model`, `thinking`, and `acceptance`. |
 | `concurrency` | number | config or `4` | Top-level parallel concurrency. |
-| `timeoutMs` / `maxRuntimeMs` | number | - | Foreground wall-clock timeout for single, parallel, and chain runs. Use with `async:false` when async-by-default is enabled. Timed-out children return `timedOut: true`; async/background runs ignore it. |
+| `timeoutMs` | number | - | Foreground wall-clock timeout for single, parallel, and chain runs. Use with `async:false` when async-by-default is enabled. Timed-out children return `timedOut: true`; async/background runs ignore it. |
 | `worktree` | boolean | false | Create isolated git worktrees for parallel tasks. |
 | `chain` | array | - | Sequential, static parallel, and dynamic fanout chain steps. Sequential steps and parallel child tasks support `phase`, `label`, `as`, `outputSchema`, and `acceptance` in addition to the usual execution fields. Dynamic fanout uses `expand`, one child `parallel` template, and `collect`; group-level acceptance is not supported because there is no child session to finalize. |
 | `context` | `fresh \| fork` | agent default or `fresh` | `fork` creates real branched sessions from the parent leaf. Packaged `planner`, `worker`, and `oracle` default to `fork`. |

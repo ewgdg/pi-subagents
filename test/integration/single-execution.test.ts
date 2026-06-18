@@ -498,6 +498,64 @@ describe("single sync execution", { skip: !available ? "pi packages not availabl
 		assert.equal(result.model, "openai/gpt-4o");
 	});
 
+	it("thinking override rewrites model suffixes", async () => {
+		mockPi.onCall({ output: "Done" });
+		const agents = [makeAgent("echo", { model: "openai/gpt-5:low", thinking: "minimal" })];
+
+		const result = await runSync(tempDir, agents, "echo", "Task", {
+			thinkingOverride: "high",
+		});
+
+		assert.equal(result.exitCode, 0);
+		assert.equal(result.model, "openai/gpt-5:high");
+		const callArgs = fs.readdirSync(mockPi.dir)
+			.filter((name) => name.startsWith("call-"))
+			.map((name) => JSON.parse(fs.readFileSync(path.join(mockPi.dir, name), "utf-8")).args as string[]);
+		assert.equal(callArgs.length, 1);
+		const modelIndex = callArgs[0]!.indexOf("--model");
+		assert.notEqual(modelIndex, -1);
+		assert.equal(callArgs[0]![modelIndex + 1], "openai/gpt-5:high");
+	});
+
+	it("thinking off strips model suffix and suppresses agent thinking", async () => {
+		mockPi.onCall({ output: "Done" });
+		const agents = [makeAgent("echo", { model: "openai/gpt-5:low", thinking: "high" })];
+
+		const result = await runSync(tempDir, agents, "echo", "Task", {
+			thinkingOverride: "off",
+		});
+
+		assert.equal(result.exitCode, 0);
+		assert.equal(result.model, "openai/gpt-5");
+	});
+
+	it("thinking override dedupes fallback candidates after rewriting suffixes", async () => {
+		mockPi.onCall({ output: "Done" });
+		const agents = [makeAgent("echo", { model: "openai/gpt-5:low", fallbackModels: ["openai/gpt-5:high"] })];
+
+		const result = await runSync(tempDir, agents, "echo", "Task", {
+			thinkingOverride: "medium",
+		});
+
+		assert.equal(result.exitCode, 0);
+		assert.equal(result.model, "openai/gpt-5:medium");
+		assert.deepEqual(result.attemptedModels, ["openai/gpt-5:medium"]);
+		assert.equal(mockPi.callCount(), 1);
+	});
+
+	it("thinking override uses parent model when no child model is configured", async () => {
+		mockPi.onCall({ output: "Done" });
+		const agents = makeAgentConfigs(["echo"]);
+
+		const result = await runSync(tempDir, agents, "echo", "Task", {
+			parentModel: "openai/gpt-5",
+			thinkingOverride: "high",
+		});
+
+		assert.equal(result.exitCode, 0);
+		assert.equal(result.model, "openai/gpt-5:high");
+	});
+
 	it("uses the parent model for explicit acceptance when no child model is configured", async () => {
 		mockPi.onCall({ output: "Done" });
 		mockPi.onCall({ output: "Finalized" });

@@ -22,6 +22,26 @@ describe("chain serializer", () => {
 		assert.match(serializeChain(parsed), /outputMode: file-only/);
 	});
 
+	it("round-trips step thinking", () => {
+		const parsed = parseChain(`---
+name: review-chain
+description: Review chain
+---
+
+## reviewer
+model: openai/gpt-5
+thinking: high
+
+Review the diff
+`, "project", "/tmp/review-chain.md");
+
+		assert.equal(parsed.steps[0]?.model, "openai/gpt-5");
+		assert.equal(parsed.steps[0]?.thinking, "high");
+		const serialized = serializeChain(parsed);
+		assert.match(serialized, /model: openai\/gpt-5/);
+		assert.match(serialized, /thinking: high/);
+	});
+
 	it("round-trips phase, label, as, and path-based outputSchema", () => {
 		const parsed = parseChain(`---
 name: review-chain

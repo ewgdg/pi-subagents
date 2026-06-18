@@ -387,8 +387,8 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 
 	const subagentParams = createSubagentParamsSchema({ asyncByDefault });
 	const foregroundTimeoutHelp = asyncByDefault
-		? "• Default execution is async/background. Do not pass timeoutMs/maxRuntimeMs unless also setting async:false. Async/background runs ignore these fields."
-		: "• Foreground timeout: { timeoutMs } or { maxRuntimeMs } - wall-clock limit for foreground single, parallel, and chain runs. Timed-out children return timedOut:true with completed sibling/prior results preserved. Async/background runs ignore these fields.";
+		? "• Default execution is async/background. Do not pass timeoutMs unless also setting async:false. Async/background runs ignore this field."
+		: "• Foreground timeout: { timeoutMs } - wall-clock limit for foreground single, parallel, and chain runs. Timed-out children return timedOut:true with completed sibling/prior results preserved. Async/background runs ignore this field.";
 
 	const tool: ToolDefinition<typeof SubagentParams, Details> = {
 		name: "subagent",

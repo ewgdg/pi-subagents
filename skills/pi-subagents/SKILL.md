@@ -167,7 +167,7 @@ For one run, use inline config:
 /run reviewer[model=anthropic/claude-sonnet-4] "Review this diff"
 ```
 
-For ad hoc thinking-level overrides, prefer a model suffix. This works for slash commands and direct `subagent(...)` tool calls, including builtins such as `reviewer` that declare their own default thinking level:
+For ad hoc thinking-level overrides, use either a model suffix or the direct `thinking` field. `thinking` is provider-specific (common values: `off`, `low`, `medium`, `high`), works anywhere `model` is accepted in direct `subagent(...)` calls, and wins over an existing `model:level` suffix.
 
 ```text
 /run reviewer[model=openai-codex/gpt-5.5:low] "Review this diff"
@@ -176,12 +176,11 @@ For ad hoc thinking-level overrides, prefer a model suffix. This works for slash
 ```typescript
 subagent({
   agent: "reviewer",
-  model: "openai-codex/gpt-5.5:low",
+  model: "openai-codex/gpt-5.5",
+  thinking: "low",
   task: "Review this diff"
 })
 ```
-
-The direct `subagent(...)` tool does not expose a top-level `thinking` parameter. Setting `thinking` in agent config without overriding `model` may still lose to the current default model's configured thinking level, so use the model suffix when the run must use a specific thinking effort.
 
 For persistent tweaks, edit `subagents.agentOverrides` in user or project settings. User overrides apply everywhere. Project overrides apply only in that repo and win over user overrides.
 

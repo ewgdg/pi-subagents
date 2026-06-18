@@ -106,7 +106,7 @@ Inspect
 `, "utf-8");
 
 		const created = handleCreate(
-			{ config: { name: "Review Flow", package: "Code Analysis", description: "Review flow", scope: "project", steps: [{ agent: "code-analysis.scout", task: "Inspect" }] } },
+			{ config: { name: "Review Flow", package: "Code Analysis", description: "Review flow", scope: "project", steps: [{ agent: "code-analysis.scout", task: "Inspect", thinking: "provider-specific-effort" }] } },
 			ctx,
 		);
 		assert.equal(created.isError, false);
@@ -116,6 +116,7 @@ Inspect
 		assert.match(content, /^name: review-flow$/m);
 		assert.match(content, /^package: code-analysis$/m);
 		assert.match(content, /^## code-analysis\.scout$/m);
+		assert.match(content, /^thinking: provider-specific-effort$/m);
 
 		const updated = handleUpdate(
 			{ chainName: "code-analysis.review-flow", config: { package: false } },

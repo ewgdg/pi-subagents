@@ -51,7 +51,7 @@ import { evaluateCompletionMutationGuard, resolveCompletionPolicy, type Completi
 import { getPiSpawnCommand } from "../shared/pi-spawn.ts";
 import { createJsonlWriter } from "../../shared/jsonl-writer.ts";
 import { attachPostExitStdioGuard, trySignalChild } from "../../shared/post-exit-stdio-guard.ts";
-import { applyThinkingSuffix, buildPiArgs, cleanupTempDir } from "../shared/pi-args.ts";
+import { applyThinkingOverride, applyThinkingSuffix, buildPiArgs, cleanupTempDir } from "../shared/pi-args.ts";
 import { readStructuredOutput } from "../shared/structured-output.ts";
 import { captureSingleOutputSnapshot, formatSavedOutputReference, resolveSingleOutput, validateFileOnlyOutputMode, type SingleOutputSnapshot } from "../shared/single-output.ts";
 import {
@@ -207,15 +207,16 @@ async function runSingleAttempt(
 		completionPolicy: CompletionPolicy;
 	},
 ): Promise<SingleResult> {
-	const modelArg = applyThinkingSuffix(model, agent.thinking);
+	const modelArg = options.thinkingOverride !== undefined
+		? applyThinkingOverride(model, options.thinkingOverride)
+		: applyThinkingSuffix(model, agent.thinking);
 	const { args, env: sharedEnv, tempDir } = buildPiArgs({
 		baseArgs: ["--mode", "json", "-p"],
 		task,
 		sessionEnabled: shared.sessionEnabled,
 		sessionDir: options.sessionDir,
 		sessionFile: options.sessionFile,
-		model,
-		thinking: agent.thinking,
+		model: modelArg,
 		systemPromptMode: agent.systemPromptMode,
 		inheritProjectContext: agent.inheritProjectContext,
 		inheritSkills: agent.inheritSkills,
@@ -1113,7 +1114,7 @@ export async function runSync(
 		systemPrompt = systemPrompt ? `${systemPrompt}\n\n${skillInjection}` : skillInjection;
 	}
 
-	const primaryModel = options.modelOverride ?? agent.model ?? (effectiveAcceptance.explicit ? options.parentModel : undefined);
+	const primaryModel = options.modelOverride ?? agent.model ?? (effectiveAcceptance.explicit || options.thinkingOverride !== undefined ? options.parentModel : undefined);
 	const candidates = buildModelCandidates(
 		primaryModel,
 		agent.fallbackModels,
@@ -1141,10 +1142,19 @@ export async function runSync(
 	}
 
 	let lastResult: SingleResult | undefined;
-	const modelsToTry = candidates.length > 0 ? candidates : [undefined];
+	const rawModelsToTry = candidates.length > 0 ? candidates : [undefined];
+	const seenEffectiveModels = new Set<string>();
+	const modelsToTry = rawModelsToTry.filter((candidate) => {
+		const effectiveCandidate = options.thinkingOverride !== undefined ? applyThinkingOverride(candidate, options.thinkingOverride) : candidate;
+		const key = effectiveCandidate ?? "__default__";
+		if (seenEffectiveModels.has(key)) return false;
+		seenEffectiveModels.add(key);
+		return true;
+	});
 	for (let i = 0; i < modelsToTry.length; i++) {
 		const candidate = modelsToTry[i];
-		if (candidate) attemptedModels.push(candidate);
+		const attemptedModel = options.thinkingOverride !== undefined ? applyThinkingOverride(candidate, options.thinkingOverride) : candidate;
+		if (attemptedModel) attemptedModels.push(attemptedModel);
 		const outputSnapshot = captureSingleOutputSnapshot(effectiveOptions.outputPath);
 		const result = await runSingleAttempt(runtimeCwd, agent, taskWithAcceptance, candidate, effectiveOptions, {
 			sessionEnabled,
@@ -1171,7 +1181,7 @@ export async function runSync(
 		totalDurationMs += result.progressSummary?.durationMs ?? 0;
 		const attemptSucceeded = result.exitCode === 0 && !result.error;
 		const attempt: ModelAttempt = {
-			model: candidate ?? result.model ?? agent.model ?? "default",
+			model: attemptedModel ?? result.model ?? agent.model ?? "default",
 			success: attemptSucceeded,
 			exitCode: result.exitCode,
 			error: result.error,

@@ -203,6 +203,10 @@ function parseStepList(raw: unknown): { steps?: ChainStepConfig[]; error?: strin
 			if (typeof s.model === "string") step.model = s.model;
 			else return { error: `config.steps[${i}].model must be a string.` };
 		}
+		if (hasKey(s, "thinking")) {
+			if (typeof s.thinking === "string") step.thinking = s.thinking;
+			else return { error: `config.steps[${i}].thinking must be a string.` };
+		}
 		if (hasKey(s, "skills")) {
 			if (s.skills === false) step.skills = false;
 			else if (Array.isArray(s.skills)) step.skills = s.skills.filter((v): v is string => typeof v === "string").map((v) => v.trim()).filter(Boolean);
@@ -434,6 +438,7 @@ function formatChainStepDetail(step: ChainStepConfig, index: number): string[] {
 	if (step.reads === false) lines.push("   Reads: false");
 	else if (Array.isArray(step.reads) && step.reads.length > 0) lines.push(`   Reads: ${step.reads.join(", ")}`);
 	if (step.model) lines.push(`   Model: ${step.model}`);
+	if (step.thinking) lines.push(`   Thinking: ${step.thinking}`);
 	if (step.skills === false) lines.push("   Skills: false");
 	else if (Array.isArray(step.skills) && step.skills.length > 0) lines.push(`   Skills: ${step.skills.join(", ")}`);
 	if (step.progress !== undefined) lines.push(`   Progress: ${step.progress ? "true" : "false"}`);

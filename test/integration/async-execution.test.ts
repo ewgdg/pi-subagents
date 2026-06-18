@@ -938,6 +938,73 @@ describe("async execution utilities", { skip: !available ? "pi packages not avai
 		assert.equal(mockPi.callCount(), 2);
 	});
 
+	it("background thinking override rewrites model suffixes", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
+		mockPi.onCall({ output: "Done" });
+		const id = `async-thinking-override-${Date.now().toString(36)}`;
+		const resultPath = path.join(RESULTS_DIR, `${id}.json`);
+		executeAsyncSingle(id, {
+			agent: "worker",
+			task: "Do work",
+			agentConfig: makeAgent("worker", { model: "openai/gpt-5:low", thinking: "minimal" }),
+			ctx: { pi: { events: { emit() {} } }, cwd: tempDir, currentSessionId: "session-1" },
+			artifactConfig: {
+				enabled: false,
+				includeInput: false,
+				includeOutput: false,
+				includeJsonl: false,
+				includeMetadata: false,
+				cleanupDays: 7,
+			},
+			shareEnabled: false,
+			maxSubagentDepth: 2,
+			thinkingOverride: "high",
+		});
+
+		const started = Date.now();
+		while (!fs.existsSync(resultPath)) {
+			if (Date.now() - started > 15000) assert.fail(`Timed out waiting for async result file: ${resultPath}`);
+			await new Promise((resolve) => setTimeout(resolve, 100));
+		}
+
+		const payload = JSON.parse(fs.readFileSync(resultPath, "utf-8")) as AsyncResultPayload;
+		assert.equal(payload.results[0]?.model, "openai/gpt-5:high");
+		assert.deepEqual(payload.results[0]?.attemptedModels, ["openai/gpt-5:high"]);
+	});
+
+	it("background thinking override dedupes fallback candidates after rewriting suffixes", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
+		mockPi.onCall({ output: "Done" });
+		const id = `async-thinking-dedupe-${Date.now().toString(36)}`;
+		const resultPath = path.join(RESULTS_DIR, `${id}.json`);
+		executeAsyncSingle(id, {
+			agent: "worker",
+			task: "Do work",
+			agentConfig: makeAgent("worker", { model: "openai/gpt-5:low", fallbackModels: ["openai/gpt-5:high"] }),
+			ctx: { pi: { events: { emit() {} } }, cwd: tempDir, currentSessionId: "session-1" },
+			artifactConfig: {
+				enabled: false,
+				includeInput: false,
+				includeOutput: false,
+				includeJsonl: false,
+				includeMetadata: false,
+				cleanupDays: 7,
+			},
+			shareEnabled: false,
+			maxSubagentDepth: 2,
+			thinkingOverride: "medium",
+		});
+
+		const started = Date.now();
+		while (!fs.existsSync(resultPath)) {
+			if (Date.now() - started > 15000) assert.fail(`Timed out waiting for async result file: ${resultPath}`);
+			await new Promise((resolve) => setTimeout(resolve, 100));
+		}
+
+		const payload = JSON.parse(fs.readFileSync(resultPath, "utf-8")) as AsyncResultPayload;
+		assert.equal(payload.results[0]?.model, "openai/gpt-5:medium");
+		assert.deepEqual(payload.results[0]?.attemptedModels, ["openai/gpt-5:medium"]);
+		assert.equal(mockPi.callCount(), 1);
+	});
+
 	it("background runs fail zero-exit provider errors when no fallback succeeds", { skip: !isAsyncAvailable() ? "jiti not available" : undefined }, async () => {
 		mockPi.onCall({
 			jsonl: [{

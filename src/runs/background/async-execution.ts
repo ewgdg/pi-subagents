@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { AgentConfig } from "../../agents/agents.ts";
-import { applyThinkingSuffix } from "../shared/pi-args.ts";
+import { applyThinkingOverride, applyThinkingSuffix } from "../shared/pi-args.ts";
 import { injectSingleOutputInstruction, normalizeSingleOutputOverride, resolveSingleOutputPath, validateFileOnlyOutputMode } from "../shared/single-output.ts";
 import { buildChainInstructions, isDynamicParallelStep, isParallelStep, resolveStepBehavior, suppressProgressForReadOnlyTask, writeInitialProgressFile, type ChainStep, type ResolvedStepBehavior, type SequentialStep, type StepOverrides } from "../../shared/settings.ts";
 import type { RunnerStep } from "../shared/parallel-utils.ts";
@@ -140,6 +140,7 @@ interface AsyncSingleParams {
 	output?: string | boolean;
 	outputMode?: "inline" | "file-only";
 	modelOverride?: string;
+	thinkingOverride?: string;
 	availableModels?: AvailableModelInfo[];
 	maxSubagentDepth: number;
 	worktreeSetupHook?: string;
@@ -218,6 +219,10 @@ function formatAsyncStartError(mode: SubagentRunMode, message: string): AsyncExe
 		isError: true,
 		details: { mode, results: [] },
 	};
+}
+
+function uniqueModelCandidates(candidates: string[]): string[] {
+	return [...new Set(candidates)];
 }
 
 const UNAVAILABLE_SUBAGENT_SKILL_ERROR = "Skills not found: pi-subagents";
@@ -314,6 +319,7 @@ export function executeAsyncChain(
 			...(s.progress !== undefined ? { progress: s.progress } : {}),
 			...(stepSkillInput !== undefined ? { skills: stepSkillInput } : {}),
 			...(s.model ? { model: s.model } : {}),
+			...(s.thinking !== undefined ? { thinking: s.thinking } : {}),
 		};
 	};
 	const buildSeqStep = (s: SequentialStep, sessionFile?: string, behaviorCwd?: string, progressPrecreated = false, resolvedBehavior?: ResolvedStepBehavior) => {
@@ -351,8 +357,9 @@ export function executeAsyncChain(
 			async: true,
 			dynamic: false,
 		});
-		const primaryModel = resolveModelCandidate(behavior.model ?? a.model ?? (effectiveAcceptance.explicit ? ctx.currentModel : undefined), availableModels, ctx.currentModelProvider);
-		const model = applyThinkingSuffix(primaryModel, a.thinking);
+		const rawPrimaryModel = behavior.model ?? a.model ?? (effectiveAcceptance.explicit || s.thinking !== undefined ? ctx.currentModel : undefined);
+		const primaryModel = resolveModelCandidate(rawPrimaryModel, availableModels, ctx.currentModelProvider);
+		const model = s.thinking !== undefined ? applyThinkingOverride(primaryModel, s.thinking) : applyThinkingSuffix(primaryModel, a.thinking);
 		return {
 			agent: s.agent,
 			task,
@@ -362,10 +369,10 @@ export function executeAsyncChain(
 			structured: Boolean(s.outputSchema),
 			cwd: stepCwd,
 			model,
-			thinking: resolveEffectiveThinking(model, a.thinking),
-			modelCandidates: buildModelCandidates(behavior.model ?? a.model ?? (effectiveAcceptance.explicit ? ctx.currentModel : undefined), a.fallbackModels, availableModels, ctx.currentModelProvider).map((candidate) =>
-				applyThinkingSuffix(candidate, a.thinking),
-			),
+			thinking: resolveEffectiveThinking(model, s.thinking ?? a.thinking),
+			modelCandidates: uniqueModelCandidates(buildModelCandidates(rawPrimaryModel, a.fallbackModels, availableModels, ctx.currentModelProvider).map((candidate) =>
+				s.thinking !== undefined ? applyThinkingOverride(candidate, s.thinking)! : applyThinkingSuffix(candidate, a.thinking)!,
+			)),
 			tools: a.tools,
 			extensions: a.extensions,
 			mcpDirectTools: a.mcpDirectTools,
@@ -668,11 +675,11 @@ export function executeAsyncSingle(
 		mode: "single",
 		async: true,
 	});
-	const primaryModel = params.modelOverride ?? agentConfig.model ?? (effectiveAcceptance.explicit ? ctx.currentModel : undefined);
-	const model = applyThinkingSuffix(
-		resolveModelCandidate(primaryModel, availableModels, ctx.currentModelProvider),
-		agentConfig.thinking,
-	);
+	const primaryModel = params.modelOverride ?? agentConfig.model ?? (effectiveAcceptance.explicit || params.thinkingOverride !== undefined ? ctx.currentModel : undefined);
+	const resolvedPrimaryModel = resolveModelCandidate(primaryModel, availableModels, ctx.currentModelProvider);
+	const model = params.thinkingOverride !== undefined
+		? applyThinkingOverride(resolvedPrimaryModel, params.thinkingOverride)
+		: applyThinkingSuffix(resolvedPrimaryModel, agentConfig.thinking);
 	let spawnResult: { pid?: number; error?: string } = {};
 	try {
 		spawnResult = spawnRunner(
@@ -684,10 +691,10 @@ export function executeAsyncSingle(
 						task: taskWithOutputInstruction,
 						cwd: runnerCwd,
 						model,
-						thinking: resolveEffectiveThinking(model, agentConfig.thinking),
-						modelCandidates: buildModelCandidates(primaryModel, agentConfig.fallbackModels, availableModels, ctx.currentModelProvider).map((candidate) =>
-							applyThinkingSuffix(candidate, agentConfig.thinking),
-						),
+						thinking: resolveEffectiveThinking(model, params.thinkingOverride ?? agentConfig.thinking),
+						modelCandidates: uniqueModelCandidates(buildModelCandidates(primaryModel, agentConfig.fallbackModels, availableModels, ctx.currentModelProvider).map((candidate) =>
+							params.thinkingOverride !== undefined ? applyThinkingOverride(candidate, params.thinkingOverride)! : applyThinkingSuffix(candidate, agentConfig.thinking)!,
+						)),
 						tools: agentConfig.tools,
 						extensions: agentConfig.extensions,
 						mcpDirectTools: agentConfig.mcpDirectTools,

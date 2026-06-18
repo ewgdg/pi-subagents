@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { findModelInfo, getSupportedThinkingLevels, type ModelInfo } from "../../src/shared/model-info.ts";
+import { findModelInfo, getSupportedThinkingLevels, resolveEffectiveThinking, type ModelInfo } from "../../src/shared/model-info.ts";
 
 describe("model info helpers", () => {
 	const ambiguousModels: ModelInfo[] = [
@@ -18,6 +18,12 @@ describe("model info helpers", () => {
 
 	it("matches provider-qualified model metadata before bare ids", () => {
 		assert.equal(findModelInfo("openai/gpt-5-mini:high", ambiguousModels, "github-copilot")?.fullId, "openai/gpt-5-mini");
+	});
+
+	it("reports provider-specific explicit thinking strings", () => {
+		assert.equal(resolveEffectiveThinking("provider/model", "provider-specific-effort"), "provider-specific-effort");
+		assert.equal(resolveEffectiveThinking("provider/model:high", "provider-specific-effort"), "high");
+		assert.equal(resolveEffectiveThinking("provider/model", "off"), undefined);
 	});
 
 	it("keeps the legacy full thinking list for reasoning models without per-level metadata", () => {

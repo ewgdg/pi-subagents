@@ -124,6 +124,7 @@ export interface ChainStepConfig {
 	outputMode?: OutputMode;
 	reads?: string[] | false;
 	model?: string;
+	thinking?: string;
 	skills?: string[] | false;
 	progress?: boolean;
 	parallel?: unknown;

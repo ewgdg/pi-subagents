@@ -15,6 +15,7 @@ import {
 	SUBAGENT_PARENT_ROOT_RUN_ID_ENV,
 	SUBAGENT_PARENT_RUN_ID_ENV,
 	SUBAGENT_RUN_ID_ENV,
+	applyThinkingOverride,
 	applyThinkingSuffix,
 	buildPiArgs,
 } from "../../src/runs/shared/pi-args.ts";
@@ -185,6 +186,12 @@ describe("buildPiArgs model wiring", () => {
 		assert.ok(!args.includes("--models"));
 	});
 
+
+	it("applies explicit thinking overrides compatibly with model suffixes", () => {
+		assert.equal(applyThinkingOverride("openai-codex/gpt-5.4-mini", "high"), "openai-codex/gpt-5.4-mini:high");
+		assert.equal(applyThinkingOverride("openai-codex/gpt-5.4-mini:low", "high"), "openai-codex/gpt-5.4-mini:high");
+		assert.equal(applyThinkingOverride("openai-codex/gpt-5.4-mini:high", "off"), "openai-codex/gpt-5.4-mini");
+	});
 
 	it("preserves thinking suffixes on model args", () => {
 		const { args } = buildPiArgs({

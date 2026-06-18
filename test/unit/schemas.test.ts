@@ -28,10 +28,6 @@ interface SubagentParamsSchema {
 			minimum?: number;
 			description?: string;
 		};
-		maxRuntimeMs?: {
-			minimum?: number;
-			description?: string;
-		};
 		id?: {
 			type?: string;
 			description?: string;
@@ -148,6 +144,9 @@ describe("SubagentParams schema", { skip: !schemasAvailable ? "typebox not avail
 		assert.equal(hasAnyOfArrayWithStringItems(readsSchema), true);
 		assert.equal(hasAnyOfType(readsSchema, "boolean"), true);
 		assert.equal(taskSchema?.progress?.type, "boolean");
+		assert.equal(taskSchema?.thinking?.type, "string");
+		assert.match(String(taskSchema?.thinking?.description ?? ""), /Provider-specific/);
+		assert.equal(SubagentParams?.properties?.thinking?.type, "string");
 
 		const concurrencySchema = SubagentParams?.properties?.concurrency;
 		assert.ok(concurrencySchema, "concurrency schema should exist");
@@ -163,20 +162,16 @@ describe("SubagentParams schema", { skip: !schemasAvailable ? "typebox not avail
 		assert.match(String(timeoutSchema.description ?? ""), /Async\/background runs ignore this field/i);
 		assert.match(String(timeoutSchema.description ?? ""), /soft-interrupted/i);
 
-		const maxRuntimeSchema = SubagentParams?.properties?.maxRuntimeMs;
-		assert.ok(maxRuntimeSchema, "maxRuntimeMs schema should exist");
-		assert.equal(maxRuntimeSchema.minimum, 1);
-		assert.match(String(maxRuntimeSchema.description ?? ""), /alias/i);
+		assert.equal(SubagentParams?.properties?.maxRuntimeMs, undefined);
 	});
 
-	it("describes timeout as async:false-only when async is default while keeping maxRuntime as a plain alias", () => {
+	it("describes timeout as async:false-only when async is default", () => {
 		assert.ok(createSubagentParamsSchema, "schema factory should exist");
 		const asyncDefaultParams = createSubagentParamsSchema({ asyncByDefault: true });
 		const timeoutDescription = String(asyncDefaultParams.properties?.timeoutMs?.description ?? "");
-		const maxRuntimeDescription = String(asyncDefaultParams.properties?.maxRuntimeMs?.description ?? "");
 		assert.match(timeoutDescription, /Ignored unless explicitly setting async:false/);
 		assert.match(timeoutDescription, /soft-interrupted/);
-		assert.equal(maxRuntimeDescription, "Alias for timeoutMs. Use only one unless both values are identical.");
+		assert.equal(asyncDefaultParams.properties?.maxRuntimeMs, undefined);
 	});
 
 	it("uses an enum for management and control actions", () => {
@@ -368,6 +363,7 @@ describe("SubagentParams schema", { skip: !schemasAvailable ? "typebox not avail
 		assert.equal(chainParallelTask?.label?.type, "string");
 		assert.equal(chainParallelTask?.as?.type, "string");
 		assert.equal(chainParallelTask?.outputSchema?.type, "object");
+		assert.equal(chainParallelTask?.thinking?.type, "string");
 		const chainParallelOutputSchema = chainParallelTask?.output;
 		assert.equal(chainParallelOutputSchema?.type, undefined);
 		assert.equal(hasAnyOfType(chainParallelOutputSchema, "string"), true);
@@ -378,6 +374,7 @@ describe("SubagentParams schema", { skip: !schemasAvailable ? "typebox not avail
 			assert.equal(hasAnyOfType(chainParallelReadsSchema, "boolean"), true);
 			assert.equal(chainItem.properties?.expand?.type, "object");
 			assert.equal(chainItem.properties?.collect?.type, "object");
+		assert.equal(chainItem.properties?.thinking?.type, "string");
 		const chainParallelSkillSchema = chainParallelTask?.skill;
 		assert.equal(chainParallelSkillSchema?.type, undefined);
 		assert.equal(hasAnyOfArrayWithStringItems(chainParallelSkillSchema), true);
@@ -404,14 +401,19 @@ describe("SubagentParams schema", { skip: !schemasAvailable ? "typebox not avail
 			{ tasks: [{ agent: "reviewer", task: "check this", skill: "review" }] },
 			{ tasks: [{ agent: "reviewer", task: "check this", skill: false }] },
 			{ tasks: [{ agent: "reviewer", task: "check this", output: "review.md", reads: ["input.md"], progress: true }] },
+			{ tasks: [{ agent: "reviewer", task: "check this", model: "openai/gpt-5", thinking: "high" }] },
 			{ chain: [{ agent: "reviewer", reads: false }] },
 			{ chain: [{ agent: "reviewer", phase: "Review", label: "Correctness", as: "findings", outputSchema: { type: "object" } }] },
+			{ chain: [{ agent: "reviewer", model: "openai/gpt-5:low", thinking: "high" }] },
 			{ chain: [{ agent: "reviewer", skill: "review" }] },
 			{ chain: [{ agent: "reviewer", skill: false }] },
 			{ chain: [{ parallel: [{ agent: "reviewer", reads: false, skill: false }] }] },
 			{ chain: [{ parallel: [{ agent: "reviewer", phase: "Review", label: "Security", as: "security", outputSchema: { type: "object" } }] }] },
 			{ chain: [{ parallel: [{ agent: "reviewer", output: "review.md", reads: ["input.md"], skill: "review" }] }] },
-			{ chain: [{ expand: { from: { output: "targets", path: "/items" }, item: "target", key: "/path", maxItems: 4 }, parallel: { agent: "reviewer", task: "Review {target.path}", outputSchema: { type: "object" } }, collect: { as: "reviews" } }] },
+			{ chain: [{ parallel: [{ agent: "reviewer", model: "openai/gpt-5", thinking: "minimal" }] }] },
+			{ chain: [{ expand: { from: { output: "targets", path: "/items" }, item: "target", key: "/path", maxItems: 4 }, parallel: { agent: "reviewer", task: "Review {target.path}", outputSchema: { type: "object", }, thinking: "low" }, collect: { as: "reviews" } }] },
+			{ agent: "worker", task: "Fix", model: "openai/gpt-5:low", thinking: "high" },
+			{ agent: "worker", task: "Fix", model: "provider/custom-model", thinking: "provider-specific-effort" },
 			{ agent: "worker", task: "Fix", acceptance: { criteria: ["Patch the bug"], evidence: ["changed-files"], maxFinalizationTurns: 2 } },
 			{ agent: "worker", task: "Fix", acceptance: { verify: [{ id: "unit", command: "npm test" }] } },
 			{ agent: "worker", task: "Fix", acceptance: {} },

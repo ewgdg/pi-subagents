@@ -69,11 +69,25 @@ interface BuildPiArgsResult {
 	tempDir?: string;
 }
 
+function splitThinkingSuffix(model: string): { baseModel: string; thinking?: string } {
+	const colonIdx = model.lastIndexOf(":");
+	if (colonIdx === -1) return { baseModel: model };
+	const suffix = model.substring(colonIdx + 1);
+	if (!THINKING_LEVELS.includes(suffix)) return { baseModel: model };
+	return { baseModel: model.substring(0, colonIdx), thinking: suffix };
+}
+
 export function applyThinkingSuffix(model: string | undefined, thinking: string | undefined): string | undefined {
 	if (!model || !thinking || thinking === "off") return model;
-	const colonIdx = model.lastIndexOf(":");
-	if (colonIdx !== -1 && THINKING_LEVELS.includes(model.substring(colonIdx + 1))) return model;
+	const { thinking: existingThinking } = splitThinkingSuffix(model);
+	if (existingThinking) return model;
 	return `${model}:${thinking}`;
+}
+
+export function applyThinkingOverride(model: string | undefined, thinking: string | undefined): string | undefined {
+	if (!model || thinking === undefined) return model;
+	const { baseModel } = splitThinkingSuffix(model);
+	return thinking === "off" ? baseModel : `${baseModel}:${thinking}`;
 }
 
 export function buildPiArgs(input: BuildPiArgsInput): BuildPiArgsResult {

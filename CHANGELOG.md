@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Added
+- Added direct `thinking` overrides to the `subagent` tool for single runs, top-level parallel tasks, sequential chain steps, chain parallel tasks, and dynamic fanout child templates. Existing `model:level` suffixes still work; explicit `thinking` wins and `off` strips known suffixes.
+
 ## [0.28.0] - 2026-06-03
 
 ### Added

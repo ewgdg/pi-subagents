@@ -288,6 +288,7 @@ async function runParallelChainTasks(input: ParallelChainRunInput): Promise<Sing
 				orchestratorIntercomTarget: input.orchestratorIntercomTarget,
 				nestedRoute: input.nestedRoute,
 				modelOverride: effectiveModel,
+				thinkingOverride: task.thinking,
 				availableModels: input.availableModels,
 				preferredModelProvider: input.ctx.model?.provider,
 				parentModel: currentModelFullId(input.ctx.model),
@@ -524,6 +525,7 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 			progress: step.progress,
 			skills: normalizeSkillInput(step.skill),
 			model: step.model,
+			thinking: step.thinking,
 		}));
 
 		const resolvedBehaviors = agentConfigs.map((config, i) =>
@@ -569,6 +571,7 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 					...step,
 					task: result.templates[i]!,
 					...(override?.model ? { model: override.model } : {}),
+					...(step.thinking !== undefined ? { thinking: step.thinking } : {}),
 					...(override?.output !== undefined ? { output: override.output } : {}),
 					...("outputMode" in step && step.outputMode !== undefined ? { outputMode: step.outputMode } : {}),
 					...(override?.reads !== undefined ? { reads: override.reads } : {}),
@@ -986,6 +989,7 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 					tuiOverride?.skills !== undefined
 						? tuiOverride.skills
 						: normalizeSkillInput(seqStep.skill),
+				thinking: seqStep.thinking,
 			};
 			const behavior = suppressProgressForReadOnlyTask(resolveStepBehavior(agentConfig, stepOverride, chainSkills), stepTemplate, originalTask);
 
@@ -1065,6 +1069,7 @@ export async function executeChain(params: ChainExecutionParams): Promise<ChainE
 				orchestratorIntercomTarget,
 				nestedRoute: params.nestedRoute,
 				modelOverride: effectiveModel,
+				thinkingOverride: seqStep.thinking,
 				availableModels,
 				preferredModelProvider: ctx.model?.provider,
 				parentModel: currentModelFullId(ctx.model),

@@ -105,6 +105,7 @@ interface TaskParam {
 	reads?: string[] | boolean;
 	progress?: boolean;
 	model?: string;
+	thinking?: string;
 	skill?: string | string[] | boolean;
 	acceptance?: AcceptanceInput;
 }
@@ -122,7 +123,6 @@ export interface SubagentParamsLike {
 	tasks?: TaskParam[];
 	concurrency?: number;
 	timeoutMs?: number;
-	maxRuntimeMs?: number;
 	worktree?: boolean;
 	context?: "fresh" | "fork";
 	async?: boolean;
@@ -135,6 +135,7 @@ export interface SubagentParamsLike {
 	artifacts?: boolean;
 	includeProgress?: boolean;
 	model?: string;
+	thinking?: string;
 	skill?: string | string[] | boolean;
 	output?: string | boolean;
 	outputMode?: "inline" | "file-only";
@@ -771,17 +772,10 @@ function validationErrorResult(mode: Details["mode"], text: string): AgentToolRe
 
 function resolveForegroundTimeoutMs(params: SubagentParamsLike): { timeoutMs?: number; error?: string } {
 	const rawTimeout = (params as { timeoutMs?: unknown }).timeoutMs;
-	const rawMaxRuntime = (params as { maxRuntimeMs?: unknown }).maxRuntimeMs;
-	for (const [name, value] of [["timeoutMs", rawTimeout], ["maxRuntimeMs", rawMaxRuntime]] as const) {
-		if (value !== undefined && (typeof value !== "number" || !Number.isInteger(value) || value < 1)) {
-			return { error: `${name} must be a positive integer.` };
-		}
+	if (rawTimeout !== undefined && (typeof rawTimeout !== "number" || !Number.isInteger(rawTimeout) || rawTimeout < 1)) {
+		return { error: "timeoutMs must be a positive integer." };
 	}
-	if (rawTimeout !== undefined && rawMaxRuntime !== undefined && rawTimeout !== rawMaxRuntime) {
-		return { error: "timeoutMs and maxRuntimeMs are aliases; provide only one or use identical values." };
-	}
-	const timeoutMs = rawTimeout ?? rawMaxRuntime;
-	return timeoutMs === undefined ? {} : { timeoutMs };
+	return rawTimeout === undefined ? {} : { timeoutMs: rawTimeout };
 }
 
 function validateAcceptanceForExecution(params: SubagentParamsLike): AgentToolResult<Details> | null {
@@ -1157,6 +1151,7 @@ function runAsyncPath(data: ExecutionContextData, deps: ExecutorDeps): AgentTool
 			task: params.context === "fork" ? wrapForkTask(task.task) : task.task,
 			cwd: task.cwd,
 			...(modelOverrides[index] ? { model: modelOverrides[index] } : {}),
+			...(task.thinking !== undefined ? { thinking: task.thinking } : {}),
 			...(skillOverrides[index] !== undefined ? { skill: skillOverrides[index] } : {}),
 			...(task.output === true ? (agentConfigs[index]?.output ? { output: agentConfigs[index]!.output } : {}) : task.output !== undefined ? { output: task.output } : {}),
 			...(task.outputMode !== undefined ? { outputMode: task.outputMode } : {}),
@@ -1254,6 +1249,7 @@ function runAsyncPath(data: ExecutionContextData, deps: ExecutorDeps): AgentTool
 			output: effectiveOutput,
 			outputMode: effectiveOutputMode,
 			modelOverride,
+			thinkingOverride: params.thinking,
 			maxSubagentDepth,
 			worktreeSetupHook: deps.config.worktreeSetupHook,
 			worktreeSetupHookTimeoutMs: deps.config.worktreeSetupHookTimeoutMs,
@@ -1580,6 +1576,7 @@ async function runForegroundParallelTasks(input: ForegroundParallelRunInput): Pr
 			orchestratorIntercomTarget: input.orchestratorIntercomTarget,
 			nestedRoute: input.foregroundControl?.nestedRoute,
 			modelOverride: input.modelOverrides[index],
+			thinkingOverride: task.thinking,
 			availableModels: input.availableModels,
 			preferredModelProvider: input.ctx.model?.provider,
 			parentModel: currentModelFullId(input.ctx.model),
@@ -1698,6 +1695,7 @@ async function runParallelPath(data: ExecutionContextData, deps: ExecutorDeps): 
 		...(task.progress !== undefined ? { progress: task.progress } : {}),
 		...(skillOverrides[index] !== undefined ? { skills: skillOverrides[index] } : {}),
 		...(task.model ? { model: task.model } : {}),
+		...(task.thinking !== undefined ? { thinking: task.thinking } : {}),
 	}));
 	const modelOverrides: (string | undefined)[] = tasks.map((_, i) =>
 		resolveModelCandidate(behaviorOverrides[i]?.model ?? agentConfigs[i]?.model, availableModels, currentProvider),
@@ -1771,6 +1769,7 @@ async function runParallelPath(data: ExecutionContextData, deps: ExecutorDeps): 
 					task: taskText,
 					cwd: t.cwd,
 					...(modelOverrides[i] ? { model: modelOverrides[i] } : {}),
+					...(t.thinking !== undefined ? { thinking: t.thinking } : {}),
 					...(skillOverrides[i] !== undefined ? { skill: skillOverrides[i] } : {}),
 					...(behaviorOverrides[i]?.output !== undefined ? { output: behaviorOverrides[i]!.output } : {}),
 					...(behaviorOverrides[i]?.outputMode !== undefined ? { outputMode: behaviorOverrides[i]!.outputMode } : {}),
@@ -2007,7 +2006,7 @@ async function runSinglePath(data: ExecutionContextData, deps: ExecutorDeps): Pr
 	const maxSubagentDepth = resolveChildMaxSubagentDepth(currentMaxSubagentDepth, agentConfig.maxSubagentDepth);
 
 	if (params.clarify === true && ctx.hasUI) {
-		const behavior = resolveStepBehavior(agentConfig, { output: effectiveOutput, skills: skillOverride });
+		const behavior = resolveStepBehavior(agentConfig, { output: effectiveOutput, skills: skillOverride, model: params.model, thinking: params.thinking });
 		const availableSkills = discoverAvailableSkills(effectiveCwd);
 
 		const result = await ctx.ui.custom<ChainClarifyResult>(
@@ -2071,6 +2070,7 @@ async function runSinglePath(data: ExecutionContextData, deps: ExecutorDeps): Pr
 				output: effectiveOutput,
 				outputMode: effectiveOutputMode,
 				modelOverride,
+				thinkingOverride: params.thinking,
 				maxSubagentDepth,
 				worktreeSetupHook: deps.config.worktreeSetupHook,
 				worktreeSetupHookTimeoutMs: deps.config.worktreeSetupHookTimeoutMs,
@@ -2162,6 +2162,7 @@ async function runSinglePath(data: ExecutionContextData, deps: ExecutorDeps): Pr
 		nestedRoute: foregroundControl?.nestedRoute,
 		index: 0,
 		modelOverride,
+		thinkingOverride: params.thinking,
 		availableModels,
 		preferredModelProvider: currentProvider,
 		parentModel: currentModelFullId(ctx.model),

@@ -41,10 +41,13 @@ export function toModelInfo(model: RegistryModelLike): ModelInfo {
  * and an explicit thinking config value. Returns `undefined` when no thinking is applicable
  * (e.g. no model was specified, or the model has no suffix and no config was provided). */
 export function resolveEffectiveThinking(model: string | undefined, configThinking: string | undefined): string | undefined {
-	if (!model) return undefined;
-	const { thinkingSuffix } = splitKnownThinkingSuffix(model);
-	if (thinkingSuffix) return thinkingSuffix.slice(1);
-	return THINKING_LEVELS.find((level) => level === configThinking);
+	const normalizedConfigThinking = configThinking?.trim();
+	if (model) {
+		const { thinkingSuffix } = splitKnownThinkingSuffix(model);
+		if (thinkingSuffix) return thinkingSuffix.slice(1);
+	}
+	if (!normalizedConfigThinking || normalizedConfigThinking === "off") return undefined;
+	return normalizedConfigThinking;
 }
 
 export function splitKnownThinkingSuffix(model: string): { baseModel: string; thinkingSuffix: string } {

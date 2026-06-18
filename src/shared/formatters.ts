@@ -7,7 +7,7 @@ import * as path from "node:path";
 import type { Usage, SingleResult } from "./types.ts";
 import type { ChainStep } from "./settings.ts";
 import { isDynamicParallelStep, isParallelStep } from "./settings.ts";
-import { splitKnownThinkingSuffix, THINKING_LEVELS } from "./model-info.ts";
+import { splitKnownThinkingSuffix } from "./model-info.ts";
 
 /**
  * Format token count with k suffix for large numbers
@@ -19,7 +19,7 @@ export function formatTokens(n: number): string {
 export function formatModelThinking(model?: string, thinking?: string): string {
 	const parsed = model ? splitKnownThinkingSuffix(model) : undefined;
 	let displayModel = parsed?.baseModel ?? model;
-	const explicitThinking = THINKING_LEVELS.find((level) => level === thinking?.trim());
+	const explicitThinking = thinking?.trim() && thinking.trim() !== "off" ? thinking.trim() : undefined;
 	const displayThinking = parsed?.thinkingSuffix ? parsed.thinkingSuffix.slice(1) : explicitThinking;
 	if (displayModel) {
 		const slashIdx = displayModel.lastIndexOf("/");
