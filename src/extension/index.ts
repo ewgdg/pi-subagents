@@ -397,8 +397,8 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 
 	const subagentParams = createSubagentParamsSchema({ asyncByDefault: hideForegroundControls });
 	const foregroundTimeoutHelp = hideForegroundControls
-		? "• Default execution is async/background; use status/resume to inspect or continue background runs."
-		: "• Foreground timeout: { timeoutMs } - wall-clock limit for foreground single, parallel, and chain runs. Timed-out children return timedOut:true with completed sibling/prior results preserved. Async/background runs ignore this field.";
+		? "• This call runs asynchronously; the subagent continues in the background."
+		: "• Prefer async/background for long runs. For foreground runs, set a large timeoutMs; otherwise the run may time out.";
 
 	const tool: ToolDefinition<typeof SubagentParams, Details> = {
 		name: "subagent",

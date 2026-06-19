@@ -141,7 +141,6 @@ describe("subagent extension child mode", () => {
 			});
 			registerSubagentExtension(fakePi);
 			if (!registeredTool) throw new Error("tool not registered");
-			if (!registeredTool.description.includes("Default execution is async/background")) throw new Error("missing async default guidance: " + registeredTool.description);
 			if (registeredTool.description.includes("async:false")) throw new Error("unexpected foreground guidance: " + registeredTool.description);
 			if (registeredTool.parameters.properties.timeoutMs !== undefined) throw new Error("timeoutMs should be hidden when async is default");
 			if (registeredTool.parameters.properties.async !== undefined) throw new Error("async should be hidden when async is default");
@@ -191,7 +190,6 @@ describe("subagent extension child mode", () => {
 			});
 			registerSubagentExtension(fakePi);
 			if (!registeredTool) throw new Error("tool not registered");
-			if (!registeredTool.description.includes("Default execution is async/background")) throw new Error("missing async default guidance: " + registeredTool.description);
 			if (registeredTool.description.includes("async:false")) throw new Error("unexpected foreground guidance: " + registeredTool.description);
 			if (registeredTool.parameters.properties.timeoutMs !== undefined) throw new Error("timeoutMs should be hidden when force async is enabled");
 			if (registeredTool.parameters.properties.async !== undefined) throw new Error("async should be hidden when force async is enabled");
