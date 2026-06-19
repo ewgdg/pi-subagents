@@ -165,12 +165,12 @@ describe("SubagentParams schema", { skip: !schemasAvailable ? "typebox not avail
 		assert.equal(SubagentParams?.properties?.maxRuntimeMs, undefined);
 	});
 
-	it("describes timeout as async:false-only when async is default", () => {
+	it("hides foreground-only controls when async is default", () => {
 		assert.ok(createSubagentParamsSchema, "schema factory should exist");
 		const asyncDefaultParams = createSubagentParamsSchema({ asyncByDefault: true });
-		const timeoutDescription = String(asyncDefaultParams.properties?.timeoutMs?.description ?? "");
-		assert.match(timeoutDescription, /Ignored unless explicitly setting async:false/);
-		assert.match(timeoutDescription, /soft-interrupted/);
+		assert.equal(asyncDefaultParams.properties?.timeoutMs, undefined);
+		assert.equal(asyncDefaultParams.properties?.async, undefined);
+		assert.equal(asyncDefaultParams.properties?.clarify, undefined);
 		assert.equal(asyncDefaultParams.properties?.maxRuntimeMs, undefined);
 	});
 

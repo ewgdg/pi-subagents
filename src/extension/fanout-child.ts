@@ -139,6 +139,7 @@ export default function registerFanoutChildSubagentExtension(pi: ExtensionAPI): 
 
 	const config = loadConfig();
 	const asyncByDefault = config.asyncByDefault === true;
+	const hideForegroundControls = asyncByDefault || config.forceTopLevelAsync === true;
 	const state = createChildSafeState();
 	const executor = createSubagentExecutor({
 		pi,
@@ -152,7 +153,7 @@ export default function registerFanoutChildSubagentExtension(pi: ExtensionAPI): 
 		allowMutatingManagementActions: false,
 	});
 
-	const subagentParams = createSubagentParamsSchema({ asyncByDefault });
+	const subagentParams = createSubagentParamsSchema({ asyncByDefault: hideForegroundControls });
 	const tool: ToolDefinition<typeof SubagentParams, Details> = {
 		name: "subagent",
 		label: "Subagent",

@@ -144,6 +144,10 @@ export interface SubagentParamsLike {
 	acceptance?: AcceptanceInput;
 }
 
+interface SubagentExecuteOptions {
+	internalForeground?: boolean;
+}
+
 interface ExecutorDeps {
 	pi: ExtensionAPI;
 	state: SubagentState;
@@ -2268,6 +2272,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 		signal: AbortSignal,
 		onUpdate: ((r: AgentToolResult<Details>) => void) | undefined,
 		ctx: ExtensionContext,
+		options?: SubagentExecuteOptions,
 	) => Promise<AgentToolResult<Details>>;
 } {
 	const execute = async (
@@ -2276,6 +2281,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 		signal: AbortSignal,
 		onUpdate: ((r: AgentToolResult<Details>) => void) | undefined,
 		ctx: ExtensionContext,
+		options: SubagentExecuteOptions = {},
 	): Promise<AgentToolResult<Details>> => {
 		deps.state.baseCwd = ctx.cwd;
 		deps.state.foregroundRuns ??= new Map();
@@ -2419,6 +2425,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 			normalizedParams,
 			depth,
 			deps.config.forceTopLevelAsync === true,
+			{ internalForeground: options.internalForeground === true },
 		);
 
 		const scope: AgentScope = resolveExecutionAgentScope(effectiveParams.agentScope);

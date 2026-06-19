@@ -113,7 +113,7 @@ describe("subagent extension child mode", () => {
 		);
 	});
 
-	it("advertises async-default timeout guidance when asyncByDefault is enabled", () => {
+	it("hides foreground controls when asyncByDefault is enabled", () => {
 		const script = String.raw`
 			import * as fs from "node:fs";
 			import * as os from "node:os";
@@ -142,9 +142,60 @@ describe("subagent extension child mode", () => {
 			registerSubagentExtension(fakePi);
 			if (!registeredTool) throw new Error("tool not registered");
 			if (!registeredTool.description.includes("Default execution is async/background")) throw new Error("missing async default guidance: " + registeredTool.description);
-			if (!registeredTool.description.includes("async:false")) throw new Error("missing async:false guidance: " + registeredTool.description);
-			const timeoutDescription = registeredTool.parameters.properties.timeoutMs.description;
-			if (!timeoutDescription.includes("Ignored unless explicitly setting async:false")) throw new Error("missing async:false schema guidance: " + timeoutDescription);
+			if (registeredTool.description.includes("async:false")) throw new Error("unexpected foreground guidance: " + registeredTool.description);
+			if (registeredTool.parameters.properties.timeoutMs !== undefined) throw new Error("timeoutMs should be hidden when async is default");
+			if (registeredTool.parameters.properties.async !== undefined) throw new Error("async should be hidden when async is default");
+			if (registeredTool.parameters.properties.clarify !== undefined) throw new Error("clarify should be hidden when async is default");
+		`;
+
+		execFileSync(
+			process.execPath,
+			[
+				"--import",
+				"jiti/register",
+				"--import",
+				"./test/support/register-loader.mjs",
+				"--input-type=module",
+				"--eval",
+				script,
+			],
+			{ cwd: projectRoot, env: parentToolEnv(), stdio: "pipe" },
+		);
+	});
+
+	it("hides foreground controls when forceTopLevelAsync is enabled", () => {
+		const script = String.raw`
+			import * as fs from "node:fs";
+			import * as os from "node:os";
+			import * as path from "node:path";
+			import registerSubagentExtensionModule from "./src/extension/index.ts";
+			const registerSubagentExtension = registerSubagentExtensionModule.default ?? registerSubagentExtensionModule;
+			const agentDir = fs.mkdtempSync(path.join(os.tmpdir(), "subagent-config-"));
+			fs.mkdirSync(path.join(agentDir, "extensions", "subagent"), { recursive: true });
+			fs.writeFileSync(path.join(agentDir, "extensions", "subagent", "config.json"), JSON.stringify({ forceTopLevelAsync: true }));
+			process.env.PI_CODING_AGENT_DIR = agentDir;
+			let registeredTool;
+			const fakePi = new Proxy({
+				events: { on() { return () => {}; }, emit() {} },
+				registerTool(tool) { registeredTool = tool; },
+				registerCommand() {},
+				registerShortcut() {},
+				registerMessageRenderer() {},
+				sendMessage() {},
+				getSessionName() { return undefined; },
+			}, {
+				get(target, prop) {
+					if (prop in target) return target[prop];
+					return () => undefined;
+				},
+			});
+			registerSubagentExtension(fakePi);
+			if (!registeredTool) throw new Error("tool not registered");
+			if (!registeredTool.description.includes("Default execution is async/background")) throw new Error("missing async default guidance: " + registeredTool.description);
+			if (registeredTool.description.includes("async:false")) throw new Error("unexpected foreground guidance: " + registeredTool.description);
+			if (registeredTool.parameters.properties.timeoutMs !== undefined) throw new Error("timeoutMs should be hidden when force async is enabled");
+			if (registeredTool.parameters.properties.async !== undefined) throw new Error("async should be hidden when force async is enabled");
+			if (registeredTool.parameters.properties.clarify !== undefined) throw new Error("clarify should be hidden when force async is enabled");
 		`;
 
 		execFileSync(

@@ -271,7 +271,9 @@ export function createSubagentParamsSchema(options: { asyncByDefault?: boolean }
 	})),
 	tasks: Type.Optional(Type.Array(TaskItem, { description: "PARALLEL mode: [{agent, task, count?, output?, outputMode?, reads?, progress?}, ...]" })),
 	concurrency: Type.Optional(Type.Integer({ minimum: 1, description: "Top-level PARALLEL mode only: max concurrent tasks. Defaults to config.parallel.concurrency or 4." })),
-	timeoutMs: Type.Optional(Type.Integer({ minimum: 1, description: foregroundTimeoutDescription(asyncByDefault) })),
+	...(asyncByDefault ? {} : {
+		timeoutMs: Type.Optional(Type.Integer({ minimum: 1, description: foregroundTimeoutDescription(asyncByDefault) })),
+	}),
 	worktree: Type.Optional(Type.Boolean({
 		description: "Create isolated git worktrees for each parallel task. " +
 			"Prevents filesystem conflicts. Requires clean git state. " +
@@ -283,7 +285,9 @@ export function createSubagentParamsSchema(options: { asyncByDefault?: boolean }
 		description: "'fresh' or 'fork' to branch from parent session. If omitted, any requested agent with defaultContext: 'fork' makes the whole invocation forked; otherwise the default is 'fresh'.",
 	})),
 	chainDir: Type.Optional(Type.String({ description: "Persistent directory for chain artifacts. Default: a user-scoped temp directory under <tmpdir>/ (auto-cleaned after 24h)" })),
-	async: Type.Optional(Type.Boolean({ description: "Run in background (default: false, or per config)" })),
+	...(asyncByDefault ? {} : {
+		async: Type.Optional(Type.Boolean({ description: "Run in background (default: false, or per config)" })),
+	}),
 	agentScope: Type.Optional(Type.String({ description: "Agent discovery scope: 'user', 'project', or 'both' (default: 'both'; project wins on name collisions)" })),
 	cwd: Type.Optional(Type.String()),
 	artifacts: Type.Optional(Type.Boolean({ description: "Write debug artifacts (default: true)" })),
@@ -293,7 +297,9 @@ export function createSubagentParamsSchema(options: { asyncByDefault?: boolean }
 		Type.String({ description: "Directory to store session logs (default: temp; enables sessions even if share=false)" }),
 	),
 	// Clarification TUI
-	clarify: Type.Optional(Type.Boolean({ description: "Show TUI to preview/edit before execution. Explicit clarify: true keeps the run foreground for the clarify UI; omitted clarify can still run in the background when async: true is set." })),
+	...(asyncByDefault ? {} : {
+		clarify: Type.Optional(Type.Boolean({ description: "Show TUI to preview/edit before execution. Explicit clarify: true keeps the run foreground for the clarify UI; omitted clarify can still run in the background when async: true is set." })),
+	}),
 	control: Type.Optional(ControlOverrides),
 	// Solo agent overrides
 	output: Type.Optional(Type.Unsafe({

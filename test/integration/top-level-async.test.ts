@@ -7,6 +7,7 @@ interface TopLevelAsyncModule {
 		params: T,
 		depth: number,
 		forceTopLevelAsync: boolean,
+		options?: { internalForeground?: boolean },
 	): T;
 }
 
@@ -21,6 +22,20 @@ describe("force top-level async helper", { skip: !available ? "pi packages not a
 		assert.equal(next.async, true);
 		assert.equal(next.clarify, false);
 		assert.equal(next.agent, "worker");
+	});
+
+	it("leaves internal foreground calls unchanged", () => {
+		const params = { async: false, clarify: false };
+		const next = mod!.applyForceTopLevelAsyncOverride(params, 0, true, { internalForeground: true });
+		assert.equal(next, params);
+	});
+
+	it("does not trust internal foreground flags inside user params", () => {
+		const params = { async: false, clarify: true, internalForeground: true };
+		const next = mod!.applyForceTopLevelAsyncOverride(params, 0, true);
+		assert.notEqual(next, params);
+		assert.equal(next.async, true);
+		assert.equal(next.clarify, false);
 	});
 
 	it("leaves nested calls unchanged", () => {

@@ -230,6 +230,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 
 	const config = loadConfig();
 	const asyncByDefault = config.asyncByDefault === true;
+	const hideForegroundControls = asyncByDefault || config.forceTopLevelAsync === true;
 	const tempArtifactsDir = getArtifactsDir(null);
 	cleanupAllArtifactDirs(DEFAULT_ARTIFACT_CONFIG.cleanupDays);
 
@@ -327,9 +328,16 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		return new SubagentControlNoticeComponent({ ...details, noticeText: formatSubagentControlNotice(details, content) }, theme);
 	});
 
-	const executeSubagentCollapsed = (id: string, params: SubagentParamsLike, signal: AbortSignal, onUpdate: ((result: AgentToolResult<Details>) => void) | undefined, ctx: ExtensionContext) => {
+	const executeSubagentCollapsed = (
+		id: string,
+		params: SubagentParamsLike,
+		signal: AbortSignal,
+		onUpdate: ((result: AgentToolResult<Details>) => void) | undefined,
+		ctx: ExtensionContext,
+		options?: { internalForeground?: boolean },
+	) => {
 		if (ctx.hasUI) ctx.ui.setToolsExpanded(false);
-		return executor.execute(id, params, signal, onUpdate, ctx);
+		return executor.execute(id, params, signal, onUpdate, ctx, options);
 	};
 
 	const slashBridge = registerSlashSubagentBridge({
@@ -357,6 +365,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 					signal,
 					onUpdate,
 					ctx,
+					{ internalForeground: true },
 				);
 			}
 			return executeSubagentCollapsed(
@@ -373,6 +382,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 				signal,
 				onUpdate,
 				ctx,
+				{ internalForeground: true },
 			);
 		},
 	});
@@ -385,9 +395,9 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		}, 0);
 	}
 
-	const subagentParams = createSubagentParamsSchema({ asyncByDefault });
-	const foregroundTimeoutHelp = asyncByDefault
-		? "• Default execution is async/background. Do not pass timeoutMs unless also setting async:false. Async/background runs ignore this field."
+	const subagentParams = createSubagentParamsSchema({ asyncByDefault: hideForegroundControls });
+	const foregroundTimeoutHelp = hideForegroundControls
+		? "• Default execution is async/background; use status/resume to inspect or continue background runs."
 		: "• Foreground timeout: { timeoutMs } - wall-clock limit for foreground single, parallel, and chain runs. Timed-out children return timedOut:true with completed sibling/prior results preserved. Async/background runs ignore this field.";
 
 	const tool: ToolDefinition<typeof SubagentParams, Details> = {
