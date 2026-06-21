@@ -5,6 +5,31 @@
 import { Type } from "typebox";
 import { SUBAGENT_ACTIONS } from "../shared/types.ts";
 
+function keepTopLevelParameterDescriptions<T>(schema: T): T {
+	return pruneNestedDescriptions(schema, []) as T;
+}
+
+function pruneNestedDescriptions(value: unknown, path: string[]): unknown {
+	if (!value || typeof value !== "object") return value;
+
+	const result = Array.isArray(value) ? [] : Object.create(Object.getPrototypeOf(value));
+	for (const key of Reflect.ownKeys(value)) {
+		const descriptor = Object.getOwnPropertyDescriptor(value, key);
+		if (!descriptor) continue;
+		if (key === "description" && !isTopLevelParameterDescription(path)) continue;
+		if ("value" in descriptor) {
+			const nextPath = typeof key === "string" ? [...path, key] : path;
+			descriptor.value = pruneNestedDescriptions(descriptor.value, nextPath);
+		}
+		Object.defineProperty(result, key, descriptor);
+	}
+	return result;
+}
+
+function isTopLevelParameterDescription(path: string[]): boolean {
+	return path.length === 2 && path[0] === "properties";
+}
+
 const SkillOverride = Type.Unsafe({
 	anyOf: [
 		{ type: "array", items: { type: "string" } },
@@ -238,7 +263,7 @@ function foregroundTimeoutDescription(asyncByDefault: boolean): string {
 
 export function createSubagentParamsSchema(options: { asyncByDefault?: boolean } = {}) {
 	const asyncByDefault = options.asyncByDefault === true;
-	return Type.Object({
+	return keepTopLevelParameterDescriptions(Type.Object({
 	agent: Type.Optional(Type.String({ description: "Agent name (SINGLE mode) or target for management get/update/delete" })),
 	task: Type.Optional(Type.String({ description: "Task (SINGLE mode, optional for self-contained agents)" })),
 	// Management action (when present, tool operates in management mode)
@@ -247,10 +272,10 @@ export function createSubagentParamsSchema(options: { asyncByDefault?: boolean }
 		description: "Management/control action. Omit for execution mode."
 	})),
 	id: Type.Optional(Type.String({
-		description: "Run id or prefix for action='status', action='interrupt', or action='resume'."
+		description: "Run id or prefix for action='status', action='interrupt', action='resume', or action='append-step'."
 	})),
 	runId: Type.Optional(Type.String({
-		description: "Target run ID for action='interrupt' or action='resume'. Defaults to the most recently active controllable run for interrupt. Prefer id for new calls."
+		description: "Target run ID for action='interrupt', action='resume', or action='append-step'. Defaults to the most recently active controllable run for interrupt. Prefer id for new calls."
 	})),
 	dir: Type.Optional(Type.String({
 		description: "Async run directory for action='status' or action='resume'."
@@ -267,7 +292,7 @@ export function createSubagentParamsSchema(options: { asyncByDefault?: boolean }
 			{ type: "object", additionalProperties: true },
 			{ type: "string" },
 		],
-		description: "Agent or chain config for create/update. Agent: name, package (optional namespace; runtime name becomes package.name), description, scope ('user'|'project', default 'user'), systemPrompt, systemPromptMode, inheritProjectContext, inheritSkills, defaultContext ('fresh'|'fork'), model, tools (comma-separated), extensions (comma-separated), skills (comma-separated), thinking, output, reads, progress, maxSubagentDepth, maxExecutionTimeMs, maxTokens. Chain: name, package, description, scope, steps (array of {agent, task?, output?, outputMode?, reads?, model?, thinking?, skill?, progress?}). Presence of 'steps' creates a chain instead of an agent. String values must be valid JSON."
+		description: "Agent or chain config for create/update. Agent: name, package (optional namespace; runtime name becomes package.name), description, scope ('user'|'project', default 'user'), systemPrompt, systemPromptMode, inheritProjectContext, inheritSkills, defaultContext ('fresh'|'fork'), model, tools (comma-separated), extensions (comma-separated), subagentOnlyExtensions (comma-separated child-only extension paths), skills (comma-separated), thinking, output, reads, progress, maxSubagentDepth, maxExecutionTimeMs, maxTokens. Chain: name, package, description, scope, steps (array of {agent, task?, output?, outputMode?, reads?, model?, thinking?, skill?, progress?}). Presence of 'steps' creates a chain instead of an agent. String values must be valid JSON."
 	})),
 	tasks: Type.Optional(Type.Array(TaskItem, { description: "PARALLEL mode: [{agent, task, count?, output?, outputMode?, reads?, progress?}, ...]" })),
 	concurrency: Type.Optional(Type.Integer({ minimum: 1, description: "Top-level PARALLEL mode only: max concurrent tasks. Defaults to config.parallel.concurrency or 4." })),
@@ -279,7 +304,7 @@ export function createSubagentParamsSchema(options: { asyncByDefault?: boolean }
 			"Prevents filesystem conflicts. Requires clean git state. " +
 			"Per-worktree diffs included in output."
 	})),
-	chain: Type.Optional(Type.Array(ChainItem, { description: "CHAIN mode: sequential pipeline where each step's response becomes {previous} for the next. Use {task}, {previous}, {chain_dir} in task templates." })),
+	chain: Type.Optional(Type.Array(ChainItem, { description: "CHAIN mode: sequential pipeline where each step's response becomes {previous} for the next. With action='append-step', provide exactly one step to append to an active async chain; it can use {previous}, {chain_dir}, and existing {outputs.name} references." })),
 	context: Type.Optional(Type.String({
 		enum: ["fresh", "fork"],
 		description: "'fresh' or 'fork' to branch from parent session. If omitted, any requested agent with defaultContext: 'fork' makes the whole invocation forked; otherwise the default is 'fresh'.",
@@ -314,7 +339,7 @@ export function createSubagentParamsSchema(options: { asyncByDefault?: boolean }
 	model: Type.Optional(Type.String({ description: "Override model for single agent (e.g. 'anthropic/claude-sonnet-4')" })),
 	thinking: Type.Optional(ThinkingOverride),
 	acceptance: Type.Optional(AcceptanceOverride),
-});
+}));
 }
 
 export const SubagentParams = createSubagentParamsSchema();

@@ -255,7 +255,8 @@ describe("subagent extension child mode", () => {
 			process.env.PI_SUBAGENT_FANOUT_CHILD = "1";
 			const calls = [];
 			const fakePi = new Proxy({}, {
-				get(_target, prop) {
+				get(target, prop) {
+					if (prop in target) return target[prop];
 					return (..._args) => {
 						calls.push(String(prop));
 						return undefined;
@@ -265,6 +266,53 @@ describe("subagent extension child mode", () => {
 			registerSubagentExtension(fakePi);
 			if (calls.length > 0) {
 				throw new Error("Unexpected child-mode registrations: " + calls.join(", "));
+			}
+		`;
+
+		execFileSync(
+			process.execPath,
+			[
+				"--import",
+				"jiti/register",
+				"--import",
+				"./test/support/register-loader.mjs",
+				"--input-type=module",
+				"--eval",
+				script,
+			],
+			{ cwd: projectRoot, stdio: "pipe" },
+		);
+	});
+
+	it("does not double-register the child-safe subagent tool when index and fanout-child both load", () => {
+		const script = String.raw`
+			import registerSubagentExtensionModule from "./src/extension/index.ts";
+			import registerFanoutChildSubagentExtensionModule from "./src/extension/fanout-child.ts";
+			const registerSubagentExtension = registerSubagentExtensionModule.default ?? registerSubagentExtensionModule;
+			const registerFanoutChildSubagentExtension = registerFanoutChildSubagentExtensionModule.default ?? registerFanoutChildSubagentExtensionModule;
+			process.env.PI_SUBAGENT_CHILD = "1";
+			process.env.PI_SUBAGENT_FANOUT_CHILD = "1";
+
+			const registeredNames = new Set();
+			const registrations = [];
+			function makePi(source) {
+				return {
+					events: { on() { return () => {}; }, emit() {} },
+					registerTool(tool) {
+						if (registeredNames.has(tool.name)) {
+							throw new Error("Tool " + tool.name + " conflicts with " + source);
+						}
+						registeredNames.add(tool.name);
+						registrations.push({ source, name: tool.name });
+					},
+					getSessionName() { return undefined; },
+				};
+			}
+
+			registerSubagentExtension(makePi("index.ts"));
+			registerFanoutChildSubagentExtension(makePi("fanout-child.ts"));
+			if (registrations.length !== 1 || registrations[0].name !== "subagent" || registrations[0].source !== "fanout-child.ts") {
+				throw new Error("expected only fanout-child.ts to register subagent, got " + JSON.stringify(registrations));
 			}
 		`;
 
