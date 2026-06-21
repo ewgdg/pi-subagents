@@ -1,4 +1,5 @@
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 import type { OutputMode, SavedOutputReference } from "../../shared/types.ts";
 
@@ -18,17 +19,28 @@ export function normalizeSingleOutputOverride(
 	return undefined;
 }
 
+function expandShellPath(value: string, env: NodeJS.ProcessEnv = process.env): string {
+	const tildeExpanded = value.startsWith("~/") ? path.join(os.homedir(), value.slice(2)) : value;
+	return tildeExpanded.replace(/\$([A-Za-z_][A-Za-z0-9_]*)|\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (match, bareName: string | undefined, bracedName: string | undefined) => {
+		const name = bareName ?? bracedName;
+		return name && Object.hasOwn(env, name) ? (env[name] ?? "") : match;
+	});
+}
+
 export function resolveSingleOutputPath(
 	output: string | boolean | undefined,
 	runtimeCwd: string,
 	requestedCwd?: string,
 ): string | undefined {
 	if (typeof output !== "string" || !output || output === "false" || output === "true") return undefined;
-	if (path.isAbsolute(output)) return output;
-	const baseCwd = requestedCwd
-		? (path.isAbsolute(requestedCwd) ? requestedCwd : path.resolve(runtimeCwd, requestedCwd))
-		: runtimeCwd;
-	return path.resolve(baseCwd, output);
+	const expandedOutput = expandShellPath(output);
+	if (path.isAbsolute(expandedOutput)) return path.resolve(expandedOutput);
+	const expandedRuntimeCwd = expandShellPath(runtimeCwd);
+	const expandedRequestedCwd = requestedCwd ? expandShellPath(requestedCwd) : undefined;
+	const baseCwd = expandedRequestedCwd
+		? (path.isAbsolute(expandedRequestedCwd) ? expandedRequestedCwd : path.resolve(expandedRuntimeCwd, expandedRequestedCwd))
+		: expandedRuntimeCwd;
+	return path.resolve(baseCwd, expandedOutput);
 }
 
 export function injectSingleOutputInstruction(task: string, outputPath: string | undefined): string {

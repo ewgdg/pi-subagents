@@ -5,6 +5,9 @@
 ### Added
 - Added direct `thinking` overrides to the `subagent` tool for single runs, top-level parallel tasks, sequential chain steps, chain parallel tasks, and dynamic fanout child templates. Existing `model:level` suffixes still work; explicit `thinking` wins and `off` strips known suffixes.
 
+### Fixed
+- Expand `~`, `$VAR`, and `${VAR}` in subagent `output` paths before resolving them, so artifact paths like `$HOME/.agents/artifacts/a.md` no longer resolve inside the repository.
+
 ## [0.30.0] - 2026-06-20
 
 ### Added

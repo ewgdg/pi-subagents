@@ -71,6 +71,26 @@ describe("resolveSingleOutputPath", () => {
 		const resolved = resolveSingleOutputPath("reviews/report.md", "/runtime", "nested/work");
 		assert.equal(resolved, path.resolve("/runtime", "nested/work", "reviews/report.md"));
 	});
+
+	it("expands home-relative output paths before resolving", () => {
+		const resolved = resolveSingleOutputPath("~/.agents/artifacts/report.md", "/repo");
+		assert.equal(resolved, path.resolve(os.homedir(), ".agents/artifacts/report.md"));
+	});
+
+	it("expands shell variables in output paths before resolving", () => {
+		const previous = process.env.PI_SUBAGENTS_OUTPUT_TEST_HOME;
+		process.env.PI_SUBAGENTS_OUTPUT_TEST_HOME = path.join(os.tmpdir(), "pi-subagents-output-home");
+		try {
+			const bare = resolveSingleOutputPath("$PI_SUBAGENTS_OUTPUT_TEST_HOME/artifacts/a.md", "/repo");
+			const braced = resolveSingleOutputPath("${PI_SUBAGENTS_OUTPUT_TEST_HOME}/artifacts/b.md", "/repo");
+
+			assert.equal(bare, path.resolve(process.env.PI_SUBAGENTS_OUTPUT_TEST_HOME, "artifacts/a.md"));
+			assert.equal(braced, path.resolve(process.env.PI_SUBAGENTS_OUTPUT_TEST_HOME, "artifacts/b.md"));
+		} finally {
+			if (previous === undefined) delete process.env.PI_SUBAGENTS_OUTPUT_TEST_HOME;
+			else process.env.PI_SUBAGENTS_OUTPUT_TEST_HOME = previous;
+		}
+	});
 });
 
 describe("injectSingleOutputInstruction", () => {
