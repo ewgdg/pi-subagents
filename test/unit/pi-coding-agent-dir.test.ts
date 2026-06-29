@@ -61,11 +61,13 @@ describe("PI_CODING_AGENT_DIR runtime paths", () => {
 		assert.equal(getAgentDir(), path.join(os.homedir(), ".pi", "agent"));
 
 		process.env.PI_CODING_AGENT_DIR = agentDir;
-		const configPath = path.join(agentDir, "extensions", "subagent", "config.json");
-		writeFile(configPath, JSON.stringify({ asyncByDefault: true, maxSubagentDepth: 3 }));
+		assert.equal(loadConfig().asyncByDefault, true);
+
+		const configPath = path.join(agentDir, "extentions", "pi-subagents", "config.json");
+		writeFile(configPath, JSON.stringify({ asyncByDefault: false, maxSubagentDepth: 3 }));
 
 		const config = loadConfig();
-		assert.equal(config.asyncByDefault, true);
+		assert.equal(config.asyncByDefault, false);
 		assert.equal(config.maxSubagentDepth, 3);
 	});
 
@@ -182,13 +184,15 @@ Package skill content.
 		assert.equal(diagnostic.active, true);
 		assert.equal(diagnostic.extensionDir, path.resolve(extensionDir));
 		assert.equal(diagnostic.configPath, path.resolve(configPath));
+		writeFile(path.join(agentDir, "extentions", "pi-subagents", "bridge.md"), "Custom bridge for {orchestratorTarget}");
 
 		const bridge = resolveIntercomBridge({
-			config: { mode: "always" },
+			config: { mode: "always", instructionFile: "./bridge.md" },
 			context: "fresh",
 			orchestratorTarget: "main",
 		});
 		assert.equal(bridge.active, true);
 		assert.equal(bridge.extensionDir, path.resolve(extensionDir));
+		assert.match(bridge.instruction, /Custom bridge for main/);
 	});
 });

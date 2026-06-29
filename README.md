@@ -879,15 +879,15 @@ After a worktree parallel step completes, per-agent diff stats are appended to t
 
 ## Configuration
 
-`pi-subagents` reads optional JSON config from `~/.pi/agent/extensions/subagent/config.json`.
+`pi-subagents` reads optional JSON config from `~/.pi/agent/extentions/pi-subagents/config.json`.
 
 ### `asyncByDefault`
 
 ```json
-{ "asyncByDefault": true }
+{ "asyncByDefault": false }
 ```
 
-Makes top-level calls use background execution when the request does not explicitly set `async`. Callers can still force foreground with `async: false` unless `forceTopLevelAsync` is enabled.
+Top-level calls use background execution by default. Set `asyncByDefault: false` to restore foreground-by-default behavior. Callers can still force foreground with `async: false` unless `forceTopLevelAsync` is enabled.
 
 ### `forceTopLevelAsync`
 
@@ -955,7 +955,7 @@ Controls whether subagents receive runtime intercom coordination instructions an
 Fields:
 
 - `mode`: default `always`; use `fork-only` to inject only for forked runs, or `off` to disable the bridge.
-- `instructionFile`: optional Markdown template replacing the default bridge instructions. `{orchestratorTarget}` is interpolated. Relative paths resolve from `~/.pi/agent/extensions/subagent/`.
+- `instructionFile`: optional Markdown template replacing the default bridge instructions. `{orchestratorTarget}` is interpolated. Relative paths resolve from `~/.pi/agent/extentions/pi-subagents/`.
 
 Bridge activation also requires `pi-intercom` to be installed and enabled through `pi install npm:pi-intercom` or a legacy local extension checkout, a targetable current session name or fallback alias, and `pi-intercom` in any explicit agent `extensions` allowlist.
 

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+- Move the optional extension config path to `~/.pi/agent/extentions/pi-subagents/config.json`.
+- Default top-level subagent calls to async/background mode unless `asyncByDefault` is set to `false`.
+
 ### Added
 - Added direct `thinking` overrides to the `subagent` tool for single runs, top-level parallel tasks, sequential chain steps, chain parallel tasks, and dynamic fanout child templates. Existing `model:level` suffixes still work; explicit `thinking` wins and `off` strips known suffixes.
 

@@ -3,6 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { AgentConfig } from "../agents/agents.ts";
+import { getSubagentsConfigDir } from "../shared/config-paths.ts";
 import type { ExtensionConfig, IntercomBridgeConfig, IntercomBridgeMode } from "../shared/types.ts";
 import { getAgentDir } from "../shared/utils.ts";
 
@@ -32,7 +33,7 @@ function defaultIntercomConfigPath(agentDir = defaultAgentDir()): string {
 }
 
 function defaultSubagentConfigDir(agentDir = defaultAgentDir()): string {
-	return path.join(agentDir, "extensions", "subagent");
+	return getSubagentsConfigDir(agentDir);
 }
 
 const DEFAULT_INTERCOM_TARGET_PREFIX = "subagent-chat";

@@ -121,8 +121,8 @@ describe("subagent extension child mode", () => {
 			import registerSubagentExtensionModule from "./src/extension/index.ts";
 			const registerSubagentExtension = registerSubagentExtensionModule.default ?? registerSubagentExtensionModule;
 			const agentDir = fs.mkdtempSync(path.join(os.tmpdir(), "subagent-config-"));
-			fs.mkdirSync(path.join(agentDir, "extensions", "subagent"), { recursive: true });
-			fs.writeFileSync(path.join(agentDir, "extensions", "subagent", "config.json"), JSON.stringify({ asyncByDefault: true }));
+			fs.mkdirSync(path.join(agentDir, "extentions", "pi-subagents"), { recursive: true });
+			fs.writeFileSync(path.join(agentDir, "extentions", "pi-subagents", "config.json"), JSON.stringify({ asyncByDefault: true }));
 			process.env.PI_CODING_AGENT_DIR = agentDir;
 			let registeredTool;
 			const fakePi = new Proxy({
@@ -170,8 +170,8 @@ describe("subagent extension child mode", () => {
 			import registerSubagentExtensionModule from "./src/extension/index.ts";
 			const registerSubagentExtension = registerSubagentExtensionModule.default ?? registerSubagentExtensionModule;
 			const agentDir = fs.mkdtempSync(path.join(os.tmpdir(), "subagent-config-"));
-			fs.mkdirSync(path.join(agentDir, "extensions", "subagent"), { recursive: true });
-			fs.writeFileSync(path.join(agentDir, "extensions", "subagent", "config.json"), JSON.stringify({ forceTopLevelAsync: true }));
+			fs.mkdirSync(path.join(agentDir, "extentions", "pi-subagents"), { recursive: true });
+			fs.writeFileSync(path.join(agentDir, "extentions", "pi-subagents", "config.json"), JSON.stringify({ forceTopLevelAsync: true }));
 			process.env.PI_CODING_AGENT_DIR = agentDir;
 			let registeredTool;
 			const fakePi = new Proxy({
