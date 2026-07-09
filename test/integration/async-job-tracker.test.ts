@@ -17,7 +17,9 @@ interface AsyncJobTrackerModule {
 			now?: () => number;
 		},
 	): {
+		ensurePoller(): void;
 		resetJobs(ctx?: unknown): void;
+		restoreActiveJobs(ctx?: unknown): void;
 		handleStarted(data: unknown): void;
 		handleComplete(data: unknown): void;
 	};
@@ -125,6 +127,168 @@ describe("async job tracker", { skip: !available ? "pi packages not available" :
 			assert.ok(ui.renderRequests > 0, "expected widget cleanup to request a rerender");
 			assert.equal(ui.widgets.at(-1), undefined);
 		} finally {
+			removeTempDir(asyncRoot);
+		}
+	});
+
+	it("restores active async runs into the widget after reset", async () => {
+		const asyncRoot = createTempDir("pi-async-job-restore-");
+		try {
+			const runDir = path.join(asyncRoot, "run-restored");
+			fs.mkdirSync(runDir, { recursive: true });
+			fs.writeFileSync(path.join(runDir, "status.json"), JSON.stringify({
+				runId: "run-restored",
+				mode: "chain",
+				state: "running",
+				sessionId: "session-restored",
+				startedAt: 1000,
+				lastUpdate: 2000,
+				currentStep: 1,
+				chainStepCount: 3,
+				parallelGroups: [{ start: 1, count: 2, stepIndex: 1 }],
+				steps: [
+					{ agent: "scout", status: "complete" },
+					{ agent: "reviewer", status: "running", currentTool: "read" },
+					{ agent: "worker", status: "running" },
+					{ agent: "writer", status: "pending" },
+				],
+			}), "utf-8");
+			fs.writeFileSync(path.join(runDir, "events.jsonl"), `${JSON.stringify({
+				type: "subagent.control",
+				channels: ["event"],
+				event: {
+					type: "needs_attention",
+					to: "needs_attention",
+					ts: 123,
+					runId: "run-restored",
+					agent: "reviewer",
+					message: "old notice",
+				},
+			})}\n`, "utf-8");
+
+			const state = createState();
+			state.currentSessionId = "session-restored";
+			const ui = createUiContext();
+			const recorder = createEventRecorder();
+			const tracker = trackerMod!.createAsyncJobTracker(recorder.pi, state as never, asyncRoot, {
+				pollIntervalMs: 10,
+			});
+			tracker.resetJobs(ui.ctx as never);
+			tracker.restoreActiveJobs(ui.ctx as never);
+
+			const job = state.asyncJobs.get("run-restored");
+			assert.ok(job);
+			assert.equal(job.status, "running");
+			assert.equal(job.sessionId, "session-restored");
+			assert.deepEqual(job.agents, ["reviewer", "worker"]);
+			assert.deepEqual(job.steps?.map((step: { index?: number }) => step.index), [1, 2]);
+			assert.equal(job.stepsTotal, 2);
+			assert.equal(job.runningSteps, 2);
+			assert.equal(job.completedSteps, 0);
+			assert.equal(job.activeParallelGroup, true);
+			assert.ok(state.poller, "expected restored active jobs to start polling");
+			assert.ok(ui.renderRequests >= 2, "expected reset and restore to request widget renders");
+			assert.equal(typeof ui.widgets.at(-1), "function", "expected restored jobs to render the widget");
+
+			await new Promise((resolve) => setTimeout(resolve, 30));
+			assert.equal(recorder.events.length, 0, "historical control events should not be replayed during restore");
+		} finally {
+			removeTempDir(asyncRoot);
+		}
+	});
+
+	it("restores only active async runs for the current session", () => {
+		const asyncRoot = createTempDir("pi-async-job-restore-scope-");
+		try {
+			const ownerDir = path.join(asyncRoot, "run-owner");
+			const otherDir = path.join(asyncRoot, "run-other");
+			fs.mkdirSync(ownerDir, { recursive: true });
+			fs.mkdirSync(otherDir, { recursive: true });
+			fs.writeFileSync(path.join(ownerDir, "status.json"), JSON.stringify({
+				runId: "run-owner",
+				mode: "single",
+				state: "running",
+				sessionId: "session-owner",
+				startedAt: 1000,
+				steps: [{ agent: "worker", status: "running" }],
+			}), "utf-8");
+			fs.writeFileSync(path.join(otherDir, "status.json"), JSON.stringify({
+				runId: "run-other",
+				mode: "single",
+				state: "running",
+				sessionId: "session-other",
+				startedAt: 1000,
+				steps: [{ agent: "worker", status: "running" }],
+			}), "utf-8");
+
+			const state = createState();
+			state.currentSessionId = "session-owner";
+			const tracker = trackerMod!.createAsyncJobTracker(createEventRecorder().pi, state as never, asyncRoot, {
+				pollIntervalMs: 10,
+			});
+			tracker.restoreActiveJobs();
+
+			assert.deepEqual([...state.asyncJobs.keys()], ["run-owner"]);
+			tracker.resetJobs();
+		} finally {
+			removeTempDir(asyncRoot);
+		}
+	});
+
+	it("ignores started and complete events without the current session id", async () => {
+		const asyncRoot = createTempDir("pi-async-job-event-scope-");
+		try {
+			const state = createState();
+			state.currentSessionId = "session-owner";
+			const tracker = trackerMod!.createAsyncJobTracker(createEventRecorder().pi, state as never, asyncRoot, {
+				completionRetentionMs: 5,
+				pollIntervalMs: 10,
+			});
+
+			tracker.handleStarted({ id: "run-sessionless", asyncDir: path.join(asyncRoot, "run-sessionless"), agent: "worker" });
+			tracker.handleStarted({ id: "run-other", asyncDir: path.join(asyncRoot, "run-other"), agent: "worker", sessionId: "session-other" });
+			tracker.handleStarted({ id: "run-owner", asyncDir: path.join(asyncRoot, "run-owner"), agent: "worker", sessionId: "session-owner" });
+
+			assert.deepEqual([...state.asyncJobs.keys()], ["run-owner"]);
+
+			tracker.handleComplete({ id: "run-owner", success: true });
+			tracker.handleComplete({ id: "run-owner", success: true, sessionId: "session-other" });
+			assert.equal(state.asyncJobs.get("run-owner")?.status, "queued");
+
+			tracker.handleComplete({ id: "run-owner", success: true, sessionId: "session-owner" });
+			await waitForCondition(() => !state.asyncJobs.has("run-owner"), "owned job cleanup after matching completion", 1000);
+		} finally {
+			removeTempDir(asyncRoot);
+		}
+	});
+
+	it("does not throw during restore when a persisted async status is malformed", () => {
+		const asyncRoot = createTempDir("pi-async-job-restore-bad-status-");
+		const originalError = console.error;
+		try {
+			const runDir = path.join(asyncRoot, "run-bad-status");
+			fs.mkdirSync(runDir, { recursive: true });
+			fs.writeFileSync(path.join(runDir, "status.json"), "{bad json", "utf-8");
+
+			const state = createState();
+			state.currentSessionId = "session-bad";
+			const ui = createUiContext();
+			const recorder = createEventRecorder();
+			const errors: unknown[][] = [];
+			console.error = (...args: unknown[]) => {
+				errors.push(args);
+			};
+
+			const tracker = trackerMod!.createAsyncJobTracker(recorder.pi, state as never, asyncRoot, {
+				pollIntervalMs: 10,
+			});
+			tracker.resetJobs(ui.ctx as never);
+			assert.doesNotThrow(() => tracker.restoreActiveJobs(ui.ctx as never));
+			assert.equal(state.asyncJobs.size, 0);
+			assert.equal(state.poller, null);
+			assert.match(String(errors[0]?.[0] ?? ""), /Failed to restore active async jobs/);
+		} finally {
+			console.error = originalError;
 			removeTempDir(asyncRoot);
 		}
 	});
@@ -578,6 +742,186 @@ describe("async job tracker", { skip: !available ? "pi packages not available" :
 			await new Promise((resolve) => setTimeout(resolve, 30));
 			assert.equal(recorder.events.some((event) => event.channel === "subagent:control-event"), true);
 		} finally {
+			removeTempDir(asyncRoot);
+		}
+	});
+
+	it("scans async control events in bounded chunks", async () => {
+		const asyncRoot = createTempDir("pi-async-job-tracker-");
+		const originalAlloc = Buffer.alloc;
+		const allocationSizes: number[] = [];
+		try {
+			const runDir = path.join(asyncRoot, "run-chunked-control");
+			fs.mkdirSync(runDir, { recursive: true });
+			fs.writeFileSync(path.join(runDir, "status.json"), JSON.stringify({
+				runId: "run-chunked-control",
+				mode: "single",
+				state: "running",
+				startedAt: Date.now() - 1000,
+				lastUpdate: Date.now(),
+				steps: [{ agent: "worker", status: "running" }],
+			}), "utf-8");
+			const largeDiagnostic = JSON.stringify({
+				type: "message_update",
+				message: { role: "assistant", content: [{ type: "text", text: "x".repeat(200_000) }] },
+			});
+			const controlEvent = JSON.stringify({
+				type: "subagent.control",
+				channels: ["event"],
+				event: {
+					type: "needs_attention",
+					to: "needs_attention",
+					ts: 123,
+					runId: "run-chunked-control",
+					agent: "worker",
+					message: "worker needs attention",
+				},
+			});
+			fs.writeFileSync(path.join(runDir, "events.jsonl"), `${largeDiagnostic}\n${controlEvent}\n`, "utf-8");
+
+			Buffer.alloc = ((size: number, fill?: string | Buffer | number, encoding?: BufferEncoding) => {
+				allocationSizes.push(size);
+				return originalAlloc(size, fill as never, encoding);
+			}) as typeof Buffer.alloc;
+
+			const state = createState();
+			const recorder = createEventRecorder();
+			const tracker = trackerMod!.createAsyncJobTracker(recorder.pi, state as never, asyncRoot, {
+				pollIntervalMs: 10,
+			});
+			tracker.handleStarted({ id: "run-chunked-control", asyncDir: runDir, agent: "worker" });
+
+			await waitForCondition(
+				() => recorder.events.some((event) => event.channel === "subagent:control-event"),
+				"chunked control event",
+			);
+			assert.ok(allocationSizes.length > 0, "expected the tracker to allocate read buffers");
+			assert.equal(Math.max(...allocationSizes) <= 64 * 1024, true);
+		} finally {
+			Buffer.alloc = originalAlloc;
+			removeTempDir(asyncRoot);
+		}
+	});
+
+	it("does not tail-skip control events for newly tracked large logs", async () => {
+		const asyncRoot = createTempDir("pi-async-job-tracker-");
+		try {
+			const runDir = path.join(asyncRoot, "run-new-large-control");
+			fs.mkdirSync(runDir, { recursive: true });
+			fs.writeFileSync(path.join(runDir, "status.json"), JSON.stringify({
+				runId: "run-new-large-control",
+				mode: "single",
+				state: "running",
+				startedAt: Date.now() - 1000,
+				lastUpdate: Date.now(),
+				steps: [{ agent: "worker", status: "running" }],
+			}), "utf-8");
+			const controlEvent = JSON.stringify({
+				type: "subagent.control",
+				channels: ["event"],
+				event: {
+					type: "needs_attention",
+					to: "needs_attention",
+					ts: 123,
+					runId: "run-new-large-control",
+					agent: "worker",
+					message: "worker needs attention",
+				},
+			});
+			const diagnosticLine = JSON.stringify({
+				type: "message_update",
+				message: { role: "assistant", content: [{ type: "text", text: "x".repeat(4000) }] },
+			}) + "\n";
+			const eventsPath = path.join(runDir, "events.jsonl");
+			fs.writeFileSync(eventsPath, controlEvent + "\n" + diagnosticLine.repeat(900), "utf-8");
+			assert.ok(fs.statSync(eventsPath).size > 2 * 1024 * 1024, "test fixture should exceed the legacy scan window");
+
+			const state = createState();
+			const recorder = createEventRecorder();
+			const tracker = trackerMod!.createAsyncJobTracker(recorder.pi, state as never, asyncRoot, {
+				pollIntervalMs: 10,
+			});
+			tracker.handleStarted({ id: "run-new-large-control", asyncDir: runDir, agent: "worker" });
+
+			await waitForCondition(
+				() => recorder.events.some((event) => event.channel === "subagent:control-event"),
+				"new large log control event",
+			);
+		} finally {
+			removeTempDir(asyncRoot);
+		}
+	});
+
+	it("starts large legacy control-event scans from a bounded tail window", async () => {
+		const asyncRoot = createTempDir("pi-async-job-tracker-");
+		const originalAlloc = Buffer.alloc;
+		const originalError = console.error;
+		const allocationSizes: number[] = [];
+		console.error = () => {};
+		try {
+			const runDir = path.join(asyncRoot, "run-large-legacy-control");
+			fs.mkdirSync(runDir, { recursive: true });
+			fs.writeFileSync(path.join(runDir, "status.json"), JSON.stringify({
+				runId: "run-large-legacy-control",
+				mode: "single",
+				state: "running",
+				startedAt: Date.now() - 1000,
+				lastUpdate: Date.now(),
+				steps: [{ agent: "worker", status: "running" }],
+			}), "utf-8");
+			const diagnosticLine = JSON.stringify({
+				type: "message_update",
+				message: { role: "assistant", content: [{ type: "text", text: "x".repeat(4000) }] },
+			}) + "\n";
+			const controlEvent = JSON.stringify({
+				type: "subagent.control",
+				channels: ["event"],
+				event: {
+					type: "needs_attention",
+					to: "needs_attention",
+					ts: 123,
+					runId: "run-large-legacy-control",
+					agent: "worker",
+					message: "worker needs attention",
+				},
+			});
+			const eventsPath = path.join(runDir, "events.jsonl");
+			fs.writeFileSync(eventsPath, diagnosticLine.repeat(900) + controlEvent + "\n", "utf-8");
+			const eventLogBytes = fs.statSync(eventsPath).size;
+			assert.ok(eventLogBytes > 2 * 1024 * 1024, "test fixture should exceed the scan window");
+
+			Buffer.alloc = ((size: number, fill?: string | Buffer | number, encoding?: BufferEncoding) => {
+				allocationSizes.push(size);
+				return originalAlloc(size, fill as never, encoding);
+			}) as typeof Buffer.alloc;
+
+			const state = createState();
+			state.asyncJobs.set("run-large-legacy-control", {
+				asyncId: "run-large-legacy-control",
+				asyncDir: runDir,
+				status: "running",
+				agents: ["worker"],
+				startedAt: Date.now() - 1000,
+				updatedAt: Date.now(),
+			});
+			const recorder = createEventRecorder();
+			const tracker = trackerMod!.createAsyncJobTracker(recorder.pi, state as never, asyncRoot, {
+				pollIntervalMs: 10,
+			});
+			tracker.ensurePoller();
+
+			await waitForCondition(
+				() => recorder.events.some((event) => event.channel === "subagent:control-event"),
+				"tail-window control event",
+			);
+			assert.ok(allocationSizes.length > 0, "expected the tracker to allocate read buffers");
+			assert.equal(Math.max(...allocationSizes) <= 64 * 1024, true);
+			const totalAllocated = allocationSizes.reduce((sum, size) => sum + size, 0);
+			assert.ok(totalAllocated < eventLogBytes, "scan should not read the full legacy event log");
+			assert.ok(totalAllocated <= 2 * 1024 * 1024 + 64 * 1024, "scan should stay within the bounded tail window");
+		} finally {
+			Buffer.alloc = originalAlloc;
+			console.error = originalError;
 			removeTempDir(asyncRoot);
 		}
 	});

@@ -22,9 +22,9 @@ export const KNOWN_FIELDS = new Set([
 	"defaultProgress",
 	"interactive",
 	"maxSubagentDepth",
-	"maxExecutionTimeMs",
-	"maxTokens",
 	"completionGuard",
+	"toolBudget",
+	"memory",
 ]);
 
 function joinComma(values: string[] | undefined): string | undefined {
@@ -32,8 +32,14 @@ function joinComma(values: string[] | undefined): string | undefined {
 	return values.join(", ");
 }
 
-export function serializeAgent(config: AgentConfig): string {
+interface SerializeAgentOptions {
+	preserveFrontmatterFields?: ReadonlySet<string>;
+}
+
+export function serializeAgent(config: AgentConfig, options: SerializeAgentOptions = {}): string {
 	const lines: string[] = [];
+	const preserve = (...fields: string[]) => fields.some((field) => options.preserveFrontmatterFields?.has(field));
+	const preservingExistingFrontmatter = options.preserveFrontmatterFields !== undefined;
 	lines.push("---");
 	lines.push(`name: ${frontmatterNameForConfig(config)}`);
 	if (config.packageName) lines.push(`package: ${config.packageName}`);
@@ -44,25 +50,27 @@ export function serializeAgent(config: AgentConfig): string {
 		...(config.mcpDirectTools ?? []).map((tool) => `mcp:${tool}`),
 	];
 	const toolsValue = joinComma(tools);
-	if (toolsValue) lines.push(`tools: ${toolsValue}`);
+	if (toolsValue || preserve("tools")) lines.push(`tools: ${toolsValue ?? ""}`);
 
-	if (config.model) lines.push(`model: ${config.model}`);
+	if (config.model || preserve("model")) lines.push(`model: ${config.model ?? ""}`);
 	const fallbackModelsValue = joinComma(config.fallbackModels);
-	if (fallbackModelsValue) lines.push(`fallbackModels: ${fallbackModelsValue}`);
-	if (config.thinking && config.thinking !== "off") lines.push(`thinking: ${config.thinking}`);
-	lines.push(`systemPromptMode: ${config.systemPromptMode}`);
-	lines.push(`inheritProjectContext: ${config.inheritProjectContext ? "true" : "false"}`);
-	lines.push(`inheritSkills: ${config.inheritSkills ? "true" : "false"}`);
-	if (config.defaultContext) lines.push(`defaultContext: ${config.defaultContext}`);
+	if (fallbackModelsValue || preserve("fallbackModels")) lines.push(`fallbackModels: ${fallbackModelsValue ?? ""}`);
+	if ((config.thinking && (config.thinking !== "off" || preserve("thinking"))) || (!config.thinking && preserve("thinking"))) {
+		lines.push(`thinking: ${config.thinking ?? ""}`);
+	}
+	if (!preservingExistingFrontmatter || preserve("systemPromptMode")) lines.push(`systemPromptMode: ${config.systemPromptMode}`);
+	if (!preservingExistingFrontmatter || preserve("inheritProjectContext")) lines.push(`inheritProjectContext: ${config.inheritProjectContext ? "true" : "false"}`);
+	if (!preservingExistingFrontmatter || preserve("inheritSkills")) lines.push(`inheritSkills: ${config.inheritSkills ? "true" : "false"}`);
+	if (config.defaultContext || preserve("defaultContext")) lines.push(`defaultContext: ${config.defaultContext ?? ""}`);
 
 	const skillsValue = joinComma(config.skills);
-	if (skillsValue) lines.push(`skills: ${skillsValue}`);
+	if (skillsValue || preserve("skill", "skills")) lines.push(`skills: ${skillsValue ?? ""}`);
 
 	if (config.extensions !== undefined) {
 		const extensionsValue = joinComma(config.extensions);
 		lines.push(`extensions: ${extensionsValue ?? ""}`);
 	}
-	if (config.subagentOnlyExtensions !== undefined) {
+	if (config.subagentOnlyExtensions !== undefined || preserve("subagentOnlyExtensions")) {
 		const subagentOnlyExtensionsValue = joinComma(config.subagentOnlyExtensions);
 		lines.push(`subagentOnlyExtensions: ${subagentOnlyExtensionsValue ?? ""}`);
 	}
@@ -78,20 +86,31 @@ export function serializeAgent(config: AgentConfig): string {
 	if (typeof maxSubagentDepth === "number" && Number.isInteger(maxSubagentDepth) && maxSubagentDepth >= 0) {
 		lines.push(`maxSubagentDepth: ${maxSubagentDepth}`);
 	}
-	const maxExecutionTimeMs = config.maxExecutionTimeMs;
-	if (typeof maxExecutionTimeMs === "number" && Number.isInteger(maxExecutionTimeMs) && maxExecutionTimeMs >= 1) {
-		lines.push(`maxExecutionTimeMs: ${maxExecutionTimeMs}`);
+	if (config.completionGuard === false || preserve("completionGuard")) {
+		lines.push(`completionGuard: ${config.completionGuard === undefined ? "" : config.completionGuard ? "true" : "false"}`);
 	}
-	const maxTokens = config.maxTokens;
-	if (typeof maxTokens === "number" && Number.isInteger(maxTokens) && maxTokens >= 1) {
-		lines.push(`maxTokens: ${maxTokens}`);
+	if (config.toolBudget || preserve("toolBudget")) {
+		lines.push(`toolBudget: ${config.toolBudget ? JSON.stringify(config.toolBudget) : ""}`);
 	}
-	if (config.completionGuard === false) lines.push("completionGuard: false");
+
+	if (config.memory) {
+		lines.push("memory:");
+		lines.push(`  scope: ${config.memory.scope}`);
+		lines.push(`  path: ${config.memory.path}`);
+	}
 
 	if (config.extraFields) {
 		for (const [key, value] of Object.entries(config.extraFields)) {
 			if (KNOWN_FIELDS.has(key)) continue;
-			lines.push(`${key}: ${value}`);
+			if (typeof value === "string" && value.includes("\n")) {
+				// Multi-line block value (e.g. permission: nested YAML)
+				lines.push(`${key}:`);
+				for (const blockLine of value.split("\n")) {
+					lines.push(`  ${blockLine}`);
+				}
+			} else {
+				lines.push(`${key}: ${value}`);
+			}
 		}
 	}
 

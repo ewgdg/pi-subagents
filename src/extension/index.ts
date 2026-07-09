@@ -2,40 +2,47 @@
  * Subagent Tool
  *
  * Full-featured subagent with sync and async modes.
- * - Sync (default): Streams output, renders markdown, tracks usage
+ * - Sync: Streams output, renders markdown, tracks usage
  * - Async: Background execution, emits events when done
  *
  * Modes: single (agent + task), parallel (tasks[]), chain (chain[] with {previous})
- * Toggle: async parameter (default: false, configurable via config.json)
+ * Toggle: async parameter (default: true, configurable via config.json)
  *
- * Config file: ~/.pi/agent/extentions/pi-subagents/config.json
+ * Config file: ~/.pi/agent/extensions/subagent/config.json
  *   { "asyncByDefault": true, "forceTopLevelAsync": true, "maxSubagentDepth": 1, "intercomBridge": { "mode": "always", "instructionFile": "./intercom-bridge.md" }, "worktreeSetupHook": "./scripts/setup-worktree.mjs" }
  */
 
+import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
-import { type ExtensionAPI, type ExtensionContext, type ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { keyText, type ExtensionAPI, type ExtensionContext, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Box, Container, Spacer, Text, truncateToWidth, visibleWidth, wrapTextWithAnsi, type Component } from "@earendil-works/pi-tui";
 import { discoverAgents } from "../agents/agents.ts";
 import { cleanupAllArtifactDirs, cleanupOldArtifacts, getArtifactsDir } from "../shared/artifacts.ts";
 import { resolveCurrentSessionId } from "../shared/session-identity.ts";
 import { cleanupOldChainDirs } from "../shared/settings.ts";
 import { clearLegacyResultAnimationTimer, renderWidget, renderSubagentResult } from "../tui/render.ts";
-import { SubagentParams, createSubagentParamsSchema } from "./schemas.ts";
+import { SubagentParams, WaitParams } from "./schemas.ts";
 import { createSubagentExecutor, type SubagentParamsLike } from "../runs/foreground/subagent-executor.ts";
 import { createAsyncJobTracker } from "../runs/background/async-job-tracker.ts";
 import { createResultWatcher } from "../runs/background/result-watcher.ts";
+import { createScheduledRunManager } from "../runs/background/scheduled-runs.ts";
 import { registerSlashCommands } from "../slash/slash-commands.ts";
 import { registerPromptTemplateDelegationBridge } from "../slash/prompt-template-bridge.ts";
+import { registerMainWatchdog } from "../watchdog/register-main.ts";
 import { registerSlashSubagentBridge } from "../slash/slash-bridge.ts";
+import { createNativeSupervisorChannel } from "../intercom/native-supervisor-channel.ts";
+import { registerSubagentRpcBridge } from "./rpc.ts";
 import { clearSlashSnapshots, getSlashRenderableSnapshot, resolveSlashMessageDetails, restoreSlashFinalSnapshots, type SlashMessageDetails } from "../slash/slash-live-state.ts";
 import { inspectSubagentStatus } from "../runs/background/run-status.ts";
+import { resolveWaitToolConfig, waitForSubagents } from "../runs/background/wait.ts";
 import registerSubagentNotify, { type SubagentNotifyDetails } from "../runs/background/notify.ts";
-import { SUBAGENT_CHILD_ENV } from "../runs/shared/pi-args.ts";
+import { SUBAGENT_CHILD_ENV, SUBAGENT_PARENT_SESSION_ENV } from "../runs/shared/pi-args.ts";
 import { formatDuration, shortenPath } from "../shared/formatters.ts";
 import { loadConfig } from "./config.ts";
+import { buildSubagentToolDescription } from "./tool-description.ts";
 import {
 	type Details,
 	type SubagentState,
@@ -43,6 +50,7 @@ import {
 	DEFAULT_ARTIFACT_CONFIG,
 	RESULTS_DIR,
 	SLASH_RESULT_TYPE,
+	SLASH_TEXT_RESULT_TYPE,
 	SUBAGENT_ASYNC_COMPLETE_EVENT,
 	SUBAGENT_ASYNC_STARTED_EVENT,
 	SUBAGENT_CONTROL_EVENT,
@@ -104,6 +112,30 @@ function isSlashResultRunning(result: { details?: Details }): boolean {
 	return result.details?.progress?.some((entry) => entry.status === "running")
 		|| result.details?.results.some((entry) => entry.progress?.status === "running")
 		|| false;
+}
+
+// Drives the inline running-indicator braille animation for foreground subagent
+// results. Foreground runs receive progress only on child events, so the glyph
+// (derived from progress fields) would freeze between events. While a result is
+// running we tick a frame counter + invalidate() every 80ms so renderSubagentResult
+// can blend the frame into runningGlyph and produce a smooth spinner.
+function subagentResultIsRunning(result: { details?: Details }): boolean {
+	return result.details?.progress?.some((entry) => entry.status === "running")
+		|| result.details?.results.some((entry) => entry.progress?.status === "running")
+		|| false;
+}
+
+function ensureSubagentResultAnimation(context: { state: Record<string, unknown>; invalidate?: () => void }): void {
+	const state = context.state as { subagentResultAnimationTimer?: ReturnType<typeof setInterval>; frame?: number };
+	if (state.subagentResultAnimationTimer) return;
+	if (typeof context.invalidate !== "function") return;
+	if (state.frame === undefined) state.frame = 0;
+	state.subagentResultAnimationTimer = setInterval(() => {
+		state.frame = ((state.frame ?? 0) + 1) % 10;
+		try {
+			context.invalidate();
+		} catch {}
+	}, 80);
 }
 
 function isSlashResultError(result: { details?: Details }): boolean {
@@ -208,8 +240,6 @@ class SubagentControlNoticeComponent implements Component {
 
 export default function registerSubagentExtension(pi: ExtensionAPI): void {
 	if (process.env[SUBAGENT_CHILD_ENV] === "1") {
-		// Child-safe fanout is registered by fanout-child.ts when authorized. Doing it
-		// here as well registers duplicate `subagent` tools through separate extension APIs.
 		return;
 	}
 	const globalStore = globalThis as Record<string, unknown>;
@@ -228,14 +258,16 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 	cleanupOldChainDirs();
 
 	const config = loadConfig();
+	const waitToolConfig = resolveWaitToolConfig(config.waitTool);
 	const asyncByDefault = config.asyncByDefault === true;
-	const hideForegroundControls = asyncByDefault || config.forceTopLevelAsync === true;
 	const tempArtifactsDir = getArtifactsDir(null);
 	cleanupAllArtifactDirs(DEFAULT_ARTIFACT_CONFIG.cleanupDays);
 
 	const state: SubagentState = {
 		baseCwd: "",
 		currentSessionId: null,
+		subagentInProgress: false,
+		subagentSpawns: { sessionId: null, count: 0 },
 		asyncJobs: new Map(),
 		foregroundRuns: new Map(),
 		foregroundControls: new Map(),
@@ -253,6 +285,8 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		},
 	};
 
+	const supervisorChannel = createNativeSupervisorChannel(pi, state);
+	const mainWatchdog = registerMainWatchdog(pi);
 	const { startResultWatcher, primeExistingResults, stopResultWatcher } = createResultWatcher(
 		pi,
 		state,
@@ -263,7 +297,10 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 	primeExistingResults();
 
 	const runtimeCleanup = () => {
+		mainWatchdog.dispose();
 		stopResultWatcher();
+		scheduledRunManager.stop();
+		supervisorChannel.dispose();
 		clearPendingForegroundControlNotices(state);
 		if (state.poller) {
 			clearInterval(state.poller);
@@ -272,22 +309,49 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 	};
 	globalStore[runtimeCleanupStoreKey] = runtimeCleanup;
 
-	const { ensurePoller, handleStarted, handleComplete, resetJobs } = createAsyncJobTracker(pi, state, ASYNC_DIR);
+	const { ensurePoller, handleStarted, handleComplete, resetJobs, restoreActiveJobs } = createAsyncJobTracker(pi, state, ASYNC_DIR);
+	let executorExecute: ((id: string, params: SubagentParamsLike, signal: AbortSignal, onUpdate: ((r: AgentToolResult<Details>) => void) | undefined, ctx: ExtensionContext) => Promise<AgentToolResult<Details>>) | undefined;
+	const scheduledRunManager = createScheduledRunManager({
+		config,
+		launch: (params, ctx, signal) => {
+			if (!executorExecute) {
+				return Promise.resolve({
+					content: [{ type: "text", text: "Scheduled subagent launch is unavailable (executor not ready)." }],
+					isError: true,
+					details: { mode: "management" as const, results: [] },
+				});
+			}
+			return executorExecute(randomUUID(), params, signal, undefined, ctx);
+		},
+	});
 	const executor = createSubagentExecutor({
 		pi,
 		state,
 		config,
 		asyncByDefault,
+		handleScheduledRunAction: (params, ctx) => scheduledRunManager.handleToolCall(params, ctx),
+		watchdog: mainWatchdog,
 		tempArtifactsDir,
 		getSubagentSessionRoot,
 		expandTilde,
 		discoverAgents,
 	});
+	executorExecute = executor.execute;
 
 	pi.registerMessageRenderer<SlashMessageDetails>(SLASH_RESULT_TYPE, (message, options, theme) => {
 		const details = resolveSlashMessageDetails(message.details);
 		if (!details) return undefined;
 		return createSlashResultComponent(details, options, theme);
+	});
+
+	pi.registerMessageRenderer<undefined>(SLASH_TEXT_RESULT_TYPE, (message, _options, _theme) => {
+		const content = typeof message.content === "string"
+			? message.content
+			: message.content
+				.filter((entry) => entry.type === "text")
+				.map((entry) => entry.text)
+				.join("\n");
+		return new Text(content, 0, 0);
 	});
 
 	pi.registerMessageRenderer<SubagentNotifyDetails>("subagent-notify", (message, options, theme) => {
@@ -312,7 +376,8 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 			text += `\n  ${theme.fg("dim", `⎿  ${line}`)}`;
 		}
 		if (!options.expanded && trimmedPreview.includes("\n")) {
-			text += `\n  ${theme.fg("dim", "Ctrl+O full notification")}`;
+			const expandKey = keyText("app.tools.expand");
+			text += `\n  ${theme.fg("dim", `${expandKey} full notification`)}`;
 		}
 		if (details.sessionLabel && details.sessionValue) {
 			text += `\n  ${theme.fg("muted", `${details.sessionLabel}: ${shortenPath(details.sessionValue)}`)}`;
@@ -327,16 +392,9 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		return new SubagentControlNoticeComponent({ ...details, noticeText: formatSubagentControlNotice(details, content) }, theme);
 	});
 
-	const executeSubagentCollapsed = (
-		id: string,
-		params: SubagentParamsLike,
-		signal: AbortSignal,
-		onUpdate: ((result: AgentToolResult<Details>) => void) | undefined,
-		ctx: ExtensionContext,
-		options?: { internalForeground?: boolean },
-	) => {
+	const executeSubagentCollapsed = (id: string, params: SubagentParamsLike, signal: AbortSignal, onUpdate: ((result: AgentToolResult<Details>) => void) | undefined, ctx: ExtensionContext) => {
 		if (ctx.hasUI) ctx.ui.setToolsExpanded(false);
-		return executor.execute(id, params, signal, onUpdate, ctx, options);
+		return executor.execute(id, params, signal, onUpdate, ctx);
 	};
 
 	const slashBridge = registerSlashSubagentBridge({
@@ -364,7 +422,6 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 					signal,
 					onUpdate,
 					ctx,
-					{ internalForeground: true },
 				);
 			}
 			return executeSubagentCollapsed(
@@ -381,9 +438,14 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 				signal,
 				onUpdate,
 				ctx,
-				{ internalForeground: true },
 			);
 		},
+	});
+
+	const rpcBridge = registerSubagentRpcBridge({
+		events: pi.events,
+		getContext: () => state.lastUiContext,
+		execute: (id, params, signal, onUpdate, ctx) => executor.execute(id, params, signal, onUpdate, ctx),
 	});
 
 	function effectiveParallelTaskCount(tasks: Array<{ count?: unknown }> | undefined): number {
@@ -394,51 +456,11 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		}, 0);
 	}
 
-	const subagentParams = createSubagentParamsSchema({ asyncByDefault: hideForegroundControls });
-	const foregroundTimeoutHelp = hideForegroundControls
-		? "• This call runs asynchronously; the subagent continues in the background."
-		: "• Prefer async/background for long runs. For foreground runs, set a large timeoutMs; otherwise the run may time out.";
-
 	const tool: ToolDefinition<typeof SubagentParams, Details> = {
 		name: "subagent",
 		label: "Subagent",
-		description: `Delegate to subagents or manage agent definitions.
-
-EXECUTION (use exactly ONE mode):
-• Before executing, use { action: "list" } to inspect configured agents/chains. Only execute agents listed as executable/non-disabled.
-• SINGLE: { agent, task? } - one task; omit task for self-contained agents
-• CHAIN: { chain: [{agent:"agent-a"}, {parallel:[{agent:"agent-b",count:3}]}] } - sequential pipeline with optional parallel fan-out
-• PARALLEL: { tasks: [{agent,task,count?,output?,reads?,progress?}, ...], concurrency?: number, worktree?: true } - concurrent execution (worktree: isolate each task in a git worktree)
-${foregroundTimeoutHelp}
-• Optional context: { context: "fresh" | "fork" } (default: if any requested agent has defaultContext: "fork", the whole invocation uses fork; otherwise "fresh"; inspect agent defaults via { action: "list" })
-• Goal-style requests: when the user says “/goal”, “goal”, “active goal”, “work until evidence says done”, or “verify against a goal”, model that as explicit acceptance. Use acceptance.criteria for the target, acceptance.evidence/verify for proof, acceptance.stopRules for constraints, and acceptance.maxFinalizationTurns for the bounded loop.
-• Plan/spec implementation handoffs: when delegating a plan, PRD, spec, issue, or broad fix to an editing-capable child, prefer structured acceptance instead of burying validation requirements in task prose. Put the implementation instructions and plan paths in task; put the definition of done, evidence, verification commands, constraints, and loop cap in acceptance.
-• If { action: "list" } shows proactive skill subagent suggestions, consider a small fresh-context fanout for broad tasks where one of those skills would materially help
-
-CHAIN TEMPLATE VARIABLES (use in task strings):
-• {task} - The original task/request from the user
-• {previous} - Text response from the previous step (empty for first step)
-• {chain_dir} - Shared directory for chain files (e.g., <tmpdir>/pi-subagents-<scope>/chain-runs/abc123/)
-
-Example: { chain: [{agent:"agent-a", task:"Analyze {task}"}, {agent:"agent-b", task:"Plan based on {previous}"}] }
-
-MANAGEMENT (use action field, omit agent/task/chain/tasks):
-• { action: "list" } - discover executable agents/chains
-• { action: "get", agent: "name" } - full detail; packaged agents use dotted runtime names like "package.agent"
-• { action: "create", config: { name: "custom-agent", package: "code-analysis", systemPrompt, systemPromptMode, inheritProjectContext, inheritSkills, defaultContext, maxExecutionTimeMs, maxTokens, ... } }
-• { action: "update", agent: "code-analysis.custom-agent", config: { package: "analysis", maxExecutionTimeMs, maxTokens, ... } } - merge
-• { action: "delete", agent: "code-analysis.custom-agent" }
-• Use chainName for chain operations; packaged chains also use dotted runtime names
-
-CONTROL:
-• { action: "status", id: "..." } - inspect an async/background run by id or prefix
-• { action: "interrupt", id?: "..." } - soft-interrupt the current child turn and leave the run paused
-• { action: "resume", id: "...", message: "...", index?: 0 } - interrupt then follow up with a live async child, or revive a completed async/foreground child from its session
-• { action: "append-step", id: "...", chain: [{agent:"agent-c", task:"Use {previous}"}] } - append one step to the tail of a running async chain
-
-DIAGNOSTICS:
-• { action: "doctor" } - read-only report for runtime paths, discovery, sessions, and intercom`,
-		parameters: subagentParams,
+		description: buildSubagentToolDescription(config),
+		parameters: SubagentParams,
 
 		execute(id, params, signal, onUpdate, ctx) {
 			return executeSubagentCollapsed(id, params, signal, onUpdate, ctx);
@@ -454,7 +476,7 @@ DIAGNOSTICS:
 			}
 			const isParallel = (args.tasks?.length ?? 0) > 0;
 			const parallelCount = effectiveParallelTaskCount(args.tasks as Array<{ count?: unknown }> | undefined);
-			const asyncLabel = args.async === true && args.clarify !== true && !isParallel ? theme.fg("warning", " [async]") : "";
+			const asyncLabel = args.async === true && args.clarify !== true ? theme.fg("warning", " [async]") : "";
 			if (args.chain?.length)
 				return new Text(
 					`${theme.fg("toolTitle", theme.bold("subagent "))}chain (${args.chain.length})${asyncLabel}`,
@@ -463,7 +485,7 @@ DIAGNOSTICS:
 				);
 			if (isParallel)
 				return new Text(
-					`${theme.fg("toolTitle", theme.bold("subagent "))}parallel (${parallelCount})`,
+					`${theme.fg("toolTitle", theme.bold("subagent "))}parallel (${parallelCount})${asyncLabel}`,
 					0,
 					0,
 				);
@@ -475,13 +497,39 @@ DIAGNOSTICS:
 		},
 
 		renderResult(result, options, theme, context) {
-			clearLegacyResultAnimationTimer(context);
-			return renderSubagentResult(result, options, theme);
+			if (subagentResultIsRunning(result)) {
+				ensureSubagentResultAnimation(context);
+			} else {
+				clearLegacyResultAnimationTimer(context);
+			}
+			const frame = (context.state as { frame?: number } | undefined)?.frame ?? 0;
+			return renderSubagentResult(result, options, theme, frame);
 		},
 
 	};
 
 	pi.registerTool(tool);
+
+	const waitTool: ToolDefinition<typeof WaitParams, Details> = {
+		name: "wait",
+		label: "Wait",
+		description: `Block until background (async) subagent runs started in this session finish, then return.
+
+Use this after launching async subagents when you have no independent work left and must not end your turn — for example inside a skill that has to run to completion, or any non-interactive run (\`pi -p ...\`) where the whole task is a single turn and ending it would abandon the still-running children.
+
+• { } — return as soon as the FIRST active run finishes (default). Ideal for a rolling fleet: launch N, wait, spawn a replacement for the one that finished, wait again — keeping N in flight.
+• { all: true } — block until EVERY active run in this session is finished.
+• { id: "..." } — wait for one specific run (id or prefix) to finish.
+• { timeoutMs: 600000 } — stop waiting after N ms (the runs keep going regardless; default 30 min)
+
+wait also returns when a run needs attention (a child that went idle or blocked for a decision), not only on completion — so a stuck child never stalls the loop; the summary names the run(s) to inspect/nudge/resume/interrupt. It wakes the instant a completion or control event arrives (subscribed to Pi's event bus, with a poll fallback that reconciles crashed runners), keeps the turn alive for normal notification delivery, and resolves early if the turn is aborted.${waitToolConfig.enabled ? "" : "\n\nConfigured behavior: wait is disabled by config.waitTool or PI_SUBAGENT_WAIT_TOOL_ENABLED and returns immediately without blocking."}`,
+		parameters: WaitParams,
+		execute(_id, params, signal, _onUpdate, _ctx) {
+			return waitForSubagents(params, signal, { state, events: pi.events, enabled: waitToolConfig.enabled });
+		},
+	};
+	pi.registerTool(waitTool);
+
 	registerSlashCommands(pi, state);
 
 	const eventUnsubscribeStoreKey = "__piSubagentEventUnsubscribes";
@@ -497,7 +545,7 @@ DIAGNOSTICS:
 			}
 		}
 	}
-	registerSubagentNotify(pi);
+	registerSubagentNotify(pi, state, { batchConfig: config.completionBatch });
 
 	const existingVisibleControlNotices = globalStore[controlNoticeSeenStoreKey];
 	const visibleControlNotices = existingVisibleControlNotices instanceof Set ? existingVisibleControlNotices as Set<string> : new Set<string>();
@@ -514,6 +562,7 @@ DIAGNOSTICS:
 		pi.events.on(SUBAGENT_ASYNC_STARTED_EVENT, handleStarted),
 		pi.events.on(SUBAGENT_ASYNC_COMPLETE_EVENT, handleComplete),
 		pi.events.on(SUBAGENT_CONTROL_EVENT, controlEventHandler),
+		rpcBridge.dispose,
 	];
 	globalStore[eventUnsubscribeStoreKey] = eventUnsubscribes;
 
@@ -542,19 +591,36 @@ DIAGNOSTICS:
 	const resetSessionState = (ctx: ExtensionContext) => {
 		state.baseCwd = ctx.cwd;
 		state.currentSessionId = resolveCurrentSessionId(ctx.sessionManager);
+		state.subagentSpawns = { sessionId: state.currentSessionId, count: 0 };
+		// Set PI_SUBAGENT_PARENT_SESSION for permission-system forwarding.
+		// Only set in the root session (the interactive UI session), not in
+		// child subagent processes — children inherit the parent's value
+		// through the process environment at spawn time and must not overwrite
+		// it with their own session identity.
+		if (!process.env[SUBAGENT_CHILD_ENV]) {
+			const sessionId = ctx.sessionManager.getSessionId();
+			if (sessionId) {
+				process.env[SUBAGENT_PARENT_SESSION_ENV] = sessionId;
+			}
+		}
 		state.lastUiContext = ctx;
 		cleanupSessionArtifacts(ctx);
 		clearPendingForegroundControlNotices(state);
 		resetJobs(ctx);
+		restoreActiveJobs(ctx);
+		scheduledRunManager.bindSession(ctx);
 		restoreSlashFinalSnapshots(ctx.sessionManager.getEntries());
 		primeExistingResults();
 	};
 
 	pi.on("session_start", (_event, ctx) => {
 		resetSessionState(ctx);
+		rpcBridge.emitReady(ctx);
+		supervisorChannel.start();
 	});
 
 	pi.on("session_shutdown", () => {
+		delete process.env[SUBAGENT_PARENT_SESSION_ENV];
 		for (const unsubscribe of eventUnsubscribes) {
 			try {
 				unsubscribe();
@@ -566,6 +632,7 @@ DIAGNOSTICS:
 			delete globalStore[eventUnsubscribeStoreKey];
 		}
 		stopResultWatcher();
+		scheduledRunManager.stop();
 		if (state.poller) clearInterval(state.poller);
 		state.poller = null;
 		clearPendingForegroundControlNotices(state);
@@ -579,6 +646,7 @@ DIAGNOSTICS:
 		slashBridge.dispose();
 		promptTemplateBridge.cancelAll();
 		promptTemplateBridge.dispose();
+		supervisorChannel.dispose();
 		if (globalStore[runtimeCleanupStoreKey] === runtimeCleanup) {
 			delete globalStore[runtimeCleanupStoreKey];
 		}

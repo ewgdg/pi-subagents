@@ -1,7 +1,6 @@
-import type { DynamicCollectSpec, DynamicExpandSpec } from "../../shared/settings.ts";
-import type { JsonSchemaObject, ResolvedAcceptanceConfig } from "../../shared/types.ts";
-
 export interface RunnerSubagentStep {
+	/** Session id of the direct parent session for permission-system ask forwarding. */
+	parentSessionId?: string;
 	agent: string;
 	task: string;
 	importAsyncRoot?: {
@@ -32,15 +31,14 @@ export interface RunnerSubagentStep {
 	outputMode?: "inline" | "file-only";
 	sessionFile?: string;
 	maxSubagentDepth?: number;
-	maxExecutionTimeMs?: number;
-	maxTokens?: number;
 	structuredOutput?: {
-		schema: JsonSchemaObject;
+		schema: import("../../shared/types.ts").JsonSchemaObject;
 		schemaPath: string;
 		outputPath: string;
 	};
-	structuredOutputSchema?: JsonSchemaObject;
-	effectiveAcceptance?: ResolvedAcceptanceConfig;
+	structuredOutputSchema?: import("../../shared/types.ts").JsonSchemaObject;
+	effectiveAcceptance?: import("../../shared/types.ts").ResolvedAcceptanceConfig;
+	toolBudget?: import("../../shared/types.ts").ResolvedToolBudget;
 }
 
 export interface ParallelStepGroup {
@@ -51,13 +49,16 @@ export interface ParallelStepGroup {
 }
 
 export interface DynamicRunnerGroup {
-	expand: DynamicExpandSpec;
+	expand: import("../../shared/settings.ts").DynamicExpandSpec;
 	parallel: RunnerSubagentStep;
-	collect: DynamicCollectSpec;
+	collect: import("../../shared/settings.ts").DynamicCollectSpec;
 	concurrency?: number;
 	failFast?: boolean;
 	phase?: string;
 	label?: string;
+	sessionFiles?: (string | undefined)[];
+	thinkingOverrides?: (string | undefined)[];
+	effectiveAcceptance?: import("../../shared/types.ts").ResolvedAcceptanceConfig;
 }
 
 export type RunnerStep = RunnerSubagentStep | ParallelStepGroup | DynamicRunnerGroup;
@@ -84,10 +85,47 @@ export function flattenSteps(steps: RunnerStep[]): RunnerSubagentStep[] {
 	return flat;
 }
 
+export const DEFAULT_GLOBAL_CONCURRENCY_LIMIT = 20;
+
+/**
+ * A promise-based semaphore for limiting concurrent access across multiple
+ * mapConcurrent calls within a single run. Enforces a global cap on the total
+ * number of subagent tasks executing simultaneously, regardless of each step's
+ * per-step concurrency limit.
+ */
+export class Semaphore {
+	private available: number;
+	private readonly queue: Array<() => void> = [];
+
+	constructor(limit: number) {
+		this.available = Math.max(1, Math.floor(limit) || 1);
+	}
+
+	acquire(): Promise<void> {
+		if (this.available > 0) {
+			this.available--;
+			return Promise.resolve();
+		}
+		return new Promise<void>((resolve) => {
+			this.queue.push(resolve);
+		});
+	}
+
+	release(): void {
+		const next = this.queue.shift();
+		if (next) {
+			next();
+		} else {
+			this.available++;
+		}
+	}
+}
+
 export async function mapConcurrent<T, R>(
 	items: T[],
 	limit: number,
 	fn: (item: T, i: number) => Promise<R>,
+	globalSemaphore?: Semaphore,
 ): Promise<R[]> {
 	const safeLimit = Math.max(1, Math.floor(limit) || 1);
 	const results: R[] = new Array(items.length);
@@ -96,7 +134,16 @@ export async function mapConcurrent<T, R>(
 	async function worker(_workerIndex: number): Promise<void> {
 		while (next < items.length) {
 			const i = next++;
-			results[i] = await fn(items[i], i);
+			if (globalSemaphore) {
+				await globalSemaphore.acquire();
+				try {
+					results[i] = await fn(items[i], i);
+				} finally {
+					globalSemaphore.release();
+				}
+			} else {
+				results[i] = await fn(items[i], i);
+			}
 		}
 	}
 
@@ -112,6 +159,7 @@ export interface ParallelTaskResult {
 	output: string;
 	exitCode: number | null;
 	error?: string;
+	timedOut?: boolean;
 	model?: string;
 	attemptedModels?: string[];
 	outputTargetPath?: string;
@@ -128,7 +176,9 @@ export function aggregateParallelOutputs(
 			const header = headerFormat(r.taskIndex ?? i, r.agent);
 			const hasOutput = Boolean(r.output?.trim());
 			const status =
-				r.exitCode === -1
+				r.timedOut
+					? `TIMED OUT${r.error ? `: ${r.error}` : ""}`
+					: r.exitCode === -1
 					? "SKIPPED"
 					: r.exitCode !== 0 && r.exitCode !== null
 						? `FAILED (exit code ${r.exitCode})${r.error ? `: ${r.error}` : ""}`

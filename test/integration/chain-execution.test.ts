@@ -89,6 +89,7 @@ interface ChainResultItem {
 	task?: string;
 	detached?: boolean;
 	timedOut?: boolean;
+	error?: string;
 	attemptedModels?: string[];
 	skills?: string[];
 	acceptance?: { status?: string; verifyRuns?: Array<{ status?: string }>; childReport?: unknown; runtimeChecks?: Array<{ status?: string; id?: string }> };
@@ -101,6 +102,7 @@ interface ChainExecutionResult {
 		results: ChainResultItem[];
 		chainAgents?: string[];
 		totalSteps?: number;
+		totalCost?: { inputTokens: number; outputTokens: number; costUsd: number };
 		workflowGraph?: {
 			nodes: Array<{ kind?: string; agent?: string; flatIndex?: number; outputName?: string; status?: string; error?: string; acceptanceStatus?: string; children?: Array<{ itemKey?: string; label?: string; status?: string; acceptanceStatus?: string }> }>;
 		};
@@ -218,33 +220,95 @@ describe("chain execution — sequential", { skip: !available ? "pi packages not
 		assert.equal(result.details.results.length, 2);
 		assert.equal(result.details.results[0].agent, "analyst");
 		assert.equal(result.details.results[1].agent, "reporter");
+		assert.deepEqual(result.details.totalCost, { inputTokens: 200, outputTokens: 100, costUsd: 0.002 });
 	});
 
-	it("returns partial results when a foreground chain times out", async () => {
-		mockPi.onCall({ output: "First complete" });
-		mockPi.onCall({ delay: 10000 });
-		const agents = [makeAgent("first"), makeAgent("second")];
+	it("runs a foreground sequential chain without clarify UI when clarify is omitted", async () => {
+		mockPi.onCall({ output: "Analysis complete" });
+		const agents = [makeAgent("analyst"), makeAgent("reporter")];
+		let customCalls = 0;
+		const ctx = {
+			...makeMinimalCtx(tempDir),
+			hasUI: true,
+			ui: {
+				custom: async () => {
+					customCalls += 1;
+					return undefined;
+				},
+			},
+		};
+
+		const result = await executeChain(
+			makeChainParams(
+				[{ agent: "analyst", task: "Analyze the code" }, { agent: "reporter" }],
+				agents,
+				{ ctx, clarify: undefined },
+			),
+		);
+
+		assert.ok(!result.isError, `chain should succeed: ${JSON.stringify(result.content)}`);
+		assert.doesNotMatch(result.content[0]?.text ?? "", /Chain cancelled/);
+		assert.equal(result.details.results.length, 2);
+		assert.equal(mockPi.callCount(), 2);
+		assert.equal(customCalls, 0);
+	});
+
+	it("uses clarify UI for a foreground sequential chain when clarify is true", async () => {
+		mockPi.onCall({ output: "Analysis complete" });
+		const agents = [makeAgent("analyst"), makeAgent("reporter")];
+		let customCalls = 0;
+		const ctx = {
+			...makeMinimalCtx(tempDir),
+			hasUI: true,
+			ui: {
+				custom: async () => {
+					customCalls += 1;
+					return {
+						confirmed: true,
+						templates: ["Clarified analysis", "Report on {previous}"],
+						behaviorOverrides: [],
+					};
+				},
+			},
+		};
+
+		const result = await executeChain(
+			makeChainParams(
+				[{ agent: "analyst", task: "Analyze the code" }, { agent: "reporter" }],
+				agents,
+				{ ctx, clarify: true },
+			),
+		);
+
+		assert.ok(!result.isError, `chain should succeed: ${JSON.stringify(result.content)}`);
+		assert.equal(customCalls, 1);
+		assert.equal(mockPi.callCount(), 2);
+		assert.match(readCallArgs(0).at(-1) ?? "", /Clarified analysis/);
+	});
+
+	it("preserves completed chain results and marks the timed-out current step", async () => {
+		mockPi.onCall({ matchArgIncludes: "Quick first step", output: "first done" });
+		mockPi.onCall({ matchArgIncludes: "Slow second step", delay: 10000 });
+		const agents = [makeAgent("analyst"), makeAgent("reporter")];
 
 		const start = Date.now();
 		const result = await executeChain(
 			makeChainParams(
-				[
-					{ agent: "first", task: "Finish quickly" },
-					{ agent: "second", task: "Run too long" },
-				],
+				[{ agent: "analyst", task: "Quick first step" }, { agent: "reporter", task: "Slow second step" }],
 				agents,
-				{ timeoutMs: 250 },
+				{ timeoutMs: 300 },
 			),
 		);
 		const elapsed = Date.now() - start;
 
 		assert.ok(elapsed < 5000, `should time out early, took ${elapsed}ms`);
 		assert.equal(result.isError, true);
-		assert.match(result.content[0]?.text ?? "", /Chain timed out at step 2/);
 		assert.equal(result.details.results.length, 2);
-		assert.equal(result.details.results[0].exitCode, 0);
-		assert.equal(result.details.results[1].exitCode, 124);
-		assert.equal(result.details.results[1].timedOut, true);
+		assert.equal(result.details.results[0]?.exitCode, 0);
+		assert.equal(result.details.results[0]?.finalOutput, "first done");
+		assert.equal(result.details.results[1]?.timedOut, true);
+		assert.equal(result.details.results[1]?.error, "Subagent timed out after 300ms.");
+		assert.match(result.content[0]?.text ?? "", /Subagent timed out after 300ms\./);
 	});
 
 	it("passes file-only saved-output references through {previous}", async () => {
@@ -293,7 +357,7 @@ describe("chain execution — sequential", { skip: !available ? "pi packages not
 
 		const result = await executeChain(
 			makeChainParams(
-				[{ agent: "worker", task: "Implement fix", output: "accepted.md", outputMode: "file-only", acceptance: { criteria: ["Patch bug"] } }],
+				[{ agent: "worker", task: "Implement fix", output: "accepted.md", outputMode: "file-only", acceptance: { level: "checked", criteria: ["Patch bug"] } }],
 				agents,
 				{ chainDir: tempDir },
 			),
@@ -303,10 +367,6 @@ describe("chain execution — sequential", { skip: !available ? "pi packages not
 		assert.match(result.details.results[0]?.finalOutput ?? "", /Output saved to:/);
 		assert.equal(result.details.results[0]?.acceptance?.status, "checked");
 		assert.ok(result.details.results[0]?.acceptance?.childReport);
-		assert.equal(result.details.results[0]?.acceptance?.finalization?.status, "completed");
-		assert.ok(result.details.results[0]?.acceptance?.initialChildReport);
-		assert.equal(mockPi.callCount(), 2);
-		assert.match(readCallArgs(1).at(-1) ?? "", /## Acceptance Finalization/);
 
 		mockPi.onCall({
 			output: [
@@ -326,7 +386,7 @@ describe("chain execution — sequential", { skip: !available ? "pi packages not
 
 		const failed = await executeChain(
 			makeChainParams(
-				[{ agent: "worker", task: "Implement fix", acceptance: { criteria: ["Patch bug"], evidence: ["tests-added"] } }],
+				[{ agent: "worker", task: "Implement fix", acceptance: { level: "checked" } }],
 				agents,
 			),
 		);
@@ -350,29 +410,23 @@ describe("chain execution — sequential", { skip: !available ? "pi packages not
 			}),
 			"```",
 		].join("\n");
-		const verifyLog = path.join(tempDir, "verify-count.txt");
-		const verifyCommand = `node -e 'require("node:fs").appendFileSync(${JSON.stringify(verifyLog)}, "x")'`;
-		mockPi.onCall({ output: acceptanceReport });
 		mockPi.onCall({ output: acceptanceReport });
 		const agents = [makeAgent("worker", { completionGuard: false })];
 
 		const result = await executeChain(
 			makeChainParams(
-				[{ agent: "worker", task: "Implement fix", acceptance: { criteria: ["Patch bug"], verify: [{ id: "runtime-pass", command: verifyCommand }] } }],
+				[{ agent: "worker", task: "Implement fix", acceptance: { level: "verified", verify: [{ id: "runtime-pass", command: "node -e \"process.exit(0)\"" }] } }],
 				agents,
 			),
 		);
 		assert.ok(!result.isError, `chain should succeed: ${JSON.stringify(result.content)}`);
 		assert.equal(result.details.results[0]?.acceptance?.status, "verified");
 		assert.equal(result.details.results[0]?.acceptance?.verifyRuns?.[0]?.status, "passed");
-		assert.equal(fs.readFileSync(verifyLog, "utf-8"), "x");
-		assert.equal(mockPi.callCount(), 2);
 
-		mockPi.onCall({ output: acceptanceReport });
 		mockPi.onCall({ output: acceptanceReport });
 		const failed = await executeChain(
 			makeChainParams(
-				[{ agent: "worker", task: "Implement fix", acceptance: { criteria: ["Patch bug"], verify: [{ id: "runtime-fail", command: "node -e \"process.exit(5)\"" }] } }],
+				[{ agent: "worker", task: "Implement fix", acceptance: { level: "verified", verify: [{ id: "runtime-fail", command: "node -e \"process.exit(5)\"" }] } }],
 				agents,
 			),
 		);
@@ -506,6 +560,24 @@ describe("chain execution — sequential", { skip: !available ? "pi packages not
 		assert.equal(fs.existsSync(path.join(tempDir, "progress.md")), false);
 	});
 
+	it("foreground chains still resolve defaultProgress inside the chain directory", async () => {
+		mockPi.onCall({ output: "Progress done" });
+		const agents = [makeAgent("reviewer", { defaultProgress: true })];
+		const chainDir = path.join(tempDir, "chain-progress");
+		const runId = "chain-progress-run";
+
+		await executeChain(
+			makeChainParams(
+				[{ agent: "reviewer", task: "Track chain work" }],
+				agents,
+				{ chainDir, runId },
+			),
+		);
+
+		const taskArg = readCallArgs(0).at(-1) ?? "";
+		assert.ok(taskArg.includes(`Create and maintain progress at: ${path.join(chainDir, runId, "progress.md")}`), taskArg);
+	});
+
 	it("passes {previous} between steps (step 2 receives step 1 output)", async () => {
 		mockPi.onCall({ output: "Step 1 unique output: MARKER_ABC_123" });
 		const agents = [makeAgent("step1"), makeAgent("step2")];
@@ -589,15 +661,13 @@ describe("chain execution — sequential", { skip: !available ? "pi packages not
 		assert.deepEqual(dynamicNode?.children?.map((child) => child.itemKey), ["src/a.ts", "src/b.ts"]);
 	});
 
-	it("persists checked acceptance status for dynamic fanout materialized children", async () => {
+	it("persists checked acceptance status for dynamic fanout materialized children and aggregate group", async () => {
 		mockPi.onCall({
 			output: "targets",
 			structuredOutput: { items: [{ path: "src/a.ts" }, { path: "src/b.ts" }] },
 		});
 		mockPi.onCall({ output: acceptanceReport({ changedFiles: ["src/a.ts"] }), structuredOutput: { ok: "a" } });
-		mockPi.onCall({ output: acceptanceReport({ changedFiles: ["src/a.ts"] }) });
 		mockPi.onCall({ output: acceptanceReport({ changedFiles: ["src/b.ts"] }), structuredOutput: { ok: "b" } });
-		mockPi.onCall({ output: acceptanceReport({ changedFiles: ["src/b.ts"] }) });
 		const agents = [makeAgent("scout"), makeAgent("reviewer", { completionGuard: false })];
 
 		const result = await executeChain(
@@ -606,8 +676,9 @@ describe("chain execution — sequential", { skip: !available ? "pi packages not
 					{ agent: "scout", task: "Return targets", as: "targets", outputSchema: { type: "object" } },
 					{
 						expand: { from: { output: "targets", path: "/items" }, key: "/path", maxItems: 4 },
-						parallel: { agent: "reviewer", task: "Review {item.path}", outputSchema: { type: "object" }, acceptance: { criteria: ["Review item"] } },
+						parallel: { agent: "reviewer", task: "Review {item.path}", outputSchema: { type: "object" }, acceptance: { level: "checked" } },
 						collect: { as: "reviews" },
+						acceptance: { level: "checked" },
 						concurrency: 1,
 					},
 				],
@@ -617,35 +688,8 @@ describe("chain execution — sequential", { skip: !available ? "pi packages not
 
 		assert.ok(!result.isError, `chain should succeed: ${JSON.stringify(result.content)}`);
 		const dynamicNode = result.details.workflowGraph?.nodes[1];
-		assert.equal(dynamicNode?.acceptanceStatus, undefined);
+		assert.equal(dynamicNode?.acceptanceStatus, "checked");
 		assert.deepEqual(dynamicNode?.children?.map((child) => child.acceptanceStatus), ["checked", "checked"]);
-	});
-
-	it("rejects group-level acceptance on dynamic fanout steps", async () => {
-		mockPi.onCall({
-			output: "targets",
-			structuredOutput: { items: [{ path: "src/a.ts" }] },
-		});
-		const agents = [makeAgent("scout"), makeAgent("reviewer", { completionGuard: false })];
-
-		const result = await executeChain(
-			makeChainParams(
-				[
-					{ agent: "scout", task: "Return targets", as: "targets", outputSchema: { type: "object" } },
-					{
-						expand: { from: { output: "targets", path: "/items" }, key: "/path", maxItems: 4 },
-						parallel: { agent: "reviewer", task: "Review {item.path}", outputSchema: { type: "object" } },
-						collect: { as: "reviews" },
-						acceptance: { criteria: ["Aggregate child reviews"] },
-					},
-				],
-				agents,
-			),
-		);
-
-		assert.equal(result.isError, true);
-		assert.match(result.content[0]?.text ?? "", /does not support group-level acceptance/);
-		assert.equal(mockPi.callCount(), 1);
 	});
 
 	it("does not expose collected dynamic output when a child fails", async () => {
@@ -866,6 +910,14 @@ describe("chain execution — sequential", { skip: !available ? "pi packages not
 
 		assert.ok(!result.isError);
 		assert.deepEqual(result.details.results[0]?.structuredOutput, { ok: true, note: "captured" });
+
+		mockPi.reset();
+		mockPi.onCall({ structuredOutput: { ok: true, note: "tool-only" } });
+		const structuredOnly = await executeChain(
+			makeChainParams([{ agent: "worker", task: "Return structured", outputSchema: schema }], agents),
+		);
+		assert.ok(!structuredOnly.isError);
+		assert.deepEqual(structuredOnly.details.results[0]?.structuredOutput, { ok: true, note: "tool-only" });
 
 		mockPi.reset();
 		mockPi.onCall({ output: "prose only" });
@@ -1332,10 +1384,10 @@ describe("chain execution — parallel steps", { skip: !available ? "pi packages
 		mockPi.onCall({
 			steps: [
 				{ jsonl: [events.toolStart("intercom", { action: "send", to: "orchestrator" })] },
-				{ delay: 1000, jsonl: [events.assistantMessage("after handoff")] },
+				{ delay: 25, jsonl: [events.assistantMessage("after handoff")] },
 			],
 		});
-		mockPi.onCall({ output: "Other task done" });
+		mockPi.onCall({ delay: 150, output: "Other task done" });
 		const agents = [
 			makeAgent("a", { systemPrompt: "Intercom orchestration channel:" }),
 			makeAgent("b", { systemPrompt: "Intercom orchestration channel:" }),
@@ -1370,7 +1422,7 @@ describe("chain execution — parallel steps", { skip: !available ? "pi packages
 		assert.match(result.content[0]?.text ?? "", /Chain detached for intercom coordination/);
 		assert.doesNotMatch(result.content[0]?.text ?? "", /resume/);
 		assert.equal(detachEmitted, true);
-		assert.equal(result.details.results.some((entry) => entry.detached === true && entry.exitCode === 0), true);
+		assert.equal(result.details.results.some((entry) => entry.detached === true && entry.exitCode === -2), true);
 	});
 
 	it("stops a sequential chain when a child detaches for intercom coordination", async () => {

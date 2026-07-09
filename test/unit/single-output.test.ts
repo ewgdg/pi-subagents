@@ -7,6 +7,7 @@ import {
 	captureSingleOutputSnapshot,
 	finalizeSingleOutput,
 	formatSavedOutputReference,
+	injectOutputPathSystemPrompt,
 	injectSingleOutputInstruction,
 	normalizeSingleOutputOverride,
 	resolveSingleOutput,
@@ -72,31 +73,32 @@ describe("resolveSingleOutputPath", () => {
 		assert.equal(resolved, path.resolve("/runtime", "nested/work", "reviews/report.md"));
 	});
 
-	it("expands home-relative output paths before resolving", () => {
-		const resolved = resolveSingleOutputPath("~/.agents/artifacts/report.md", "/repo");
-		assert.equal(resolved, path.resolve(os.homedir(), ".agents/artifacts/report.md"));
-	});
-
-	it("expands shell variables in output paths before resolving", () => {
-		const previous = process.env.PI_SUBAGENTS_OUTPUT_TEST_HOME;
-		process.env.PI_SUBAGENTS_OUTPUT_TEST_HOME = path.join(os.tmpdir(), "pi-subagents-output-home");
-		try {
-			const bare = resolveSingleOutputPath("$PI_SUBAGENTS_OUTPUT_TEST_HOME/artifacts/a.md", "/repo");
-			const braced = resolveSingleOutputPath("${PI_SUBAGENTS_OUTPUT_TEST_HOME}/artifacts/b.md", "/repo");
-
-			assert.equal(bare, path.resolve(process.env.PI_SUBAGENTS_OUTPUT_TEST_HOME, "artifacts/a.md"));
-			assert.equal(braced, path.resolve(process.env.PI_SUBAGENTS_OUTPUT_TEST_HOME, "artifacts/b.md"));
-		} finally {
-			if (previous === undefined) delete process.env.PI_SUBAGENTS_OUTPUT_TEST_HOME;
-			else process.env.PI_SUBAGENTS_OUTPUT_TEST_HOME = previous;
-		}
+	it("resolves relative output paths against an explicit artifact base", () => {
+		const resolved = resolveSingleOutputPath("reviews/report.md", "/runtime", "/requested", "/repo/.pi-subagents/artifacts/outputs/run-1");
+		assert.equal(resolved, path.resolve("/repo/.pi-subagents/artifacts/outputs/run-1", "reviews/report.md"));
 	});
 });
 
 describe("injectSingleOutputInstruction", () => {
 	it("appends output instruction with resolved path", () => {
 		const output = injectSingleOutputInstruction("Analyze this", "/tmp/report.md");
-		assert.match(output, /Write your findings to: \/tmp\/report.md/);
+		assert.match(output, /Write your findings to exactly this path: \/tmp\/report.md/);
+		assert.match(output, /This path is authoritative for this run\./);
+		assert.match(output, /Ignore any other output filename or output path mentioned elsewhere/);
+	});
+});
+
+describe("injectOutputPathSystemPrompt", () => {
+	it("adds the authoritative runtime output path to the system prompt", () => {
+		const output = injectOutputPathSystemPrompt("Output format (`old.md`):", "/tmp/new.md");
+		assert.match(output, /^Output format \(`old\.md`\):/);
+		assert.match(output, /Runtime output path override:/);
+		assert.match(output, /Write your findings to exactly this path: \/tmp\/new\.md/);
+		assert.match(output, /Ignore any other output filename or output path mentioned elsewhere/);
+	});
+
+	it("leaves prompts unchanged when no output path is active", () => {
+		assert.equal(injectOutputPathSystemPrompt("Base prompt", undefined), "Base prompt");
 	});
 });
 

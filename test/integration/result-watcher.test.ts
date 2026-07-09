@@ -70,6 +70,92 @@ describe("result watcher", () => {
 		}
 	});
 
+	it("delivers result files only to the exact owning session when another watcher shares the same repo", async () => {
+		const resultsDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-result-watcher-scope-"));
+		const createPi = () => {
+			const emitted: Array<{ event: string; data: unknown }> = [];
+			const listeners = new Map<string, Set<(payload: unknown) => void>>();
+			const pi = {
+				events: {
+					on(event: string, handler: (payload: unknown) => void) {
+						const eventListeners = listeners.get(event) ?? new Set();
+						eventListeners.add(handler);
+						listeners.set(event, eventListeners);
+						return () => eventListeners.delete(handler);
+					},
+					emit(event: string, data: unknown) {
+						emitted.push({ event, data });
+						for (const handler of listeners.get(event) ?? []) handler(data);
+						if (event === "subagent:result-intercom") {
+							const requestId = data && typeof data === "object" ? (data as { requestId?: unknown }).requestId : undefined;
+							if (typeof requestId === "string") {
+								setImmediate(() => pi.events.emit("subagent:result-intercom-delivery", { requestId, delivered: true }));
+							}
+						}
+					},
+				},
+			};
+			return { pi, emitted };
+		};
+		try {
+			const owner = createPi();
+			const other = createPi();
+			const ownerState = createState();
+			ownerState.currentSessionId = "session-owner";
+			const otherState = createState();
+			otherState.currentSessionId = "session-other";
+			const ownerWatcher = createResultWatcher(owner.pi, ownerState, resultsDir, 60_000);
+			const otherWatcher = createResultWatcher(other.pi, otherState, resultsDir, 60_000);
+			const ownerResultPath = path.join(resultsDir, "owner-run.json");
+			const sessionlessResultPath = path.join(resultsDir, "sessionless-run.json");
+			try {
+				fs.writeFileSync(ownerResultPath, JSON.stringify({
+					id: "owner-run",
+					agent: "worker",
+					mode: "single",
+					success: true,
+					state: "complete",
+					summary: "owner output",
+					results: [{ agent: "worker", output: "owner output", success: true }],
+					sessionId: "session-owner",
+					cwd: "/repo",
+					intercomTarget: "owner-target",
+				}), "utf-8");
+				fs.writeFileSync(sessionlessResultPath, JSON.stringify({
+					id: "sessionless-run",
+					agent: "worker",
+					mode: "single",
+					success: true,
+					state: "complete",
+					summary: "legacy cwd-scoped output",
+					results: [{ agent: "worker", output: "legacy cwd-scoped output", success: true }],
+					cwd: "/repo",
+					intercomTarget: "sessionless-target",
+				}), "utf-8");
+
+				otherWatcher.primeExistingResults();
+				await new Promise((resolve) => setTimeout(resolve, 100));
+				ownerWatcher.primeExistingResults();
+				await new Promise((resolve) => setTimeout(resolve, 100));
+			} finally {
+				ownerWatcher.stopResultWatcher();
+				otherWatcher.stopResultWatcher();
+			}
+
+			const ownerCompletions = owner.emitted.filter((entry) => entry.event === "subagent:async-complete");
+			const ownerIntercom = owner.emitted.filter((entry) => entry.event === "subagent:result-intercom");
+			assert.equal(ownerCompletions.length, 1);
+			assert.equal((ownerCompletions[0]?.data as { id?: string } | undefined)?.id, "owner-run");
+			assert.equal(ownerIntercom.length, 1);
+			assert.equal(other.emitted.some((entry) => entry.event === "subagent:async-complete"), false);
+			assert.equal(other.emitted.some((entry) => entry.event === "subagent:result-intercom"), false);
+			assert.equal(fs.existsSync(ownerResultPath), false);
+			assert.equal(fs.existsSync(sessionlessResultPath), true);
+		} finally {
+			fs.rmSync(resultsDir, { recursive: true, force: true });
+		}
+	});
+
 	it("logs malformed result files instead of swallowing them silently", async () => {
 		const resultsDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-result-watcher-"));
 		try {
@@ -103,6 +189,49 @@ describe("result watcher", () => {
 				logged.some((entry) => /Failed to process subagent result file/.test(String(entry[0] ?? ""))),
 				"expected watcher error to be logged",
 			);
+		} finally {
+			fs.rmSync(resultsDir, { recursive: true, force: true });
+		}
+	});
+
+	it("normalizes the native fs.watch path before watching result files", () => {
+		const resultsDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-result-watcher-"));
+		try {
+			const nativeResultsDir = path.join(path.dirname(resultsDir), `${path.basename(resultsDir)}-native`);
+			const pi = {
+				events: {
+					on: () => () => {},
+					emit() {},
+				},
+			};
+			const state = createState();
+			let watchedDir: fs.PathLike | undefined;
+			const fakeWatcher = {
+				on() {
+					return fakeWatcher;
+				},
+				close() {},
+				unref() {},
+			} as fs.FSWatcher;
+			const realpathSync = ((target: fs.PathLike, options?: unknown) => fs.realpathSync(target, options as BufferEncoding)) as typeof fs.realpathSync;
+			realpathSync.native = ((target: fs.PathLike) => target === resultsDir ? nativeResultsDir : fs.realpathSync.native(target)) as typeof fs.realpathSync.native;
+			const watcher = createResultWatcher(pi, state, resultsDir, 60_000, {
+				fs: {
+					...fs,
+					realpathSync,
+					watch(dir) {
+						watchedDir = dir;
+						return fakeWatcher;
+					},
+				},
+			});
+			try {
+				watcher.startResultWatcher();
+			} finally {
+				watcher.stopResultWatcher();
+			}
+
+			assert.equal(watchedDir, nativeResultsDir);
 		} finally {
 			fs.rmSync(resultsDir, { recursive: true, force: true });
 		}
@@ -341,6 +470,68 @@ describe("result watcher", () => {
 			assert.ok(message.includes(`Session: ${firstSession}`));
 			assert.equal(message.includes(missingSession), false);
 			assert.equal(emitted.some((entry) => entry.event === "subagent:async-complete"), true);
+		} finally {
+			fs.rmSync(resultsDir, { recursive: true, force: true });
+		}
+	});
+
+	it("does not mark completed siblings as stopped when the overall async result is stopped", async () => {
+		const resultsDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-result-watcher-stopped-siblings-"));
+		try {
+			const emitted: Array<{ event: string; data: unknown }> = [];
+			const listeners = new Map<string, Set<(payload: unknown) => void>>();
+			const pi = {
+				events: {
+					on(event: string, handler: (payload: unknown) => void) {
+						const set = listeners.get(event) ?? new Set();
+						set.add(handler);
+						listeners.set(event, set);
+						return () => set.delete(handler);
+					},
+					emit(event: string, data: unknown) {
+						emitted.push({ event, data });
+						for (const handler of listeners.get(event) ?? []) handler(data);
+						if (event === "subagent:result-intercom") {
+							const requestId = data && typeof data === "object" ? (data as { requestId?: unknown }).requestId : undefined;
+							if (typeof requestId === "string") setImmediate(() => pi.events.emit("subagent:result-intercom-delivery", { requestId, delivered: true }));
+						}
+					},
+				},
+			};
+			const state = createState();
+			state.currentSessionId = "session-1";
+			const watcher = createResultWatcher(pi, state, resultsDir, 60_000);
+			try {
+				fs.writeFileSync(path.join(resultsDir, "async-stopped.json"), JSON.stringify({
+					id: "async-stopped",
+					runId: "async-stopped",
+					agent: "parallel:a+b",
+					mode: "parallel",
+					success: false,
+					state: "stopped",
+					stopped: true,
+					summary: "Stopped by user",
+					results: [
+						{ agent: "a", output: "Result from a", success: true },
+						{ agent: "b", output: "Subagent stopped by user.", success: false, stopped: true, state: "stopped" },
+					],
+					sessionId: "session-1",
+					intercomTarget: "subagent-chat-main",
+				}, null, 2), "utf-8");
+				watcher.primeExistingResults();
+				await new Promise((resolve) => setTimeout(resolve, 100));
+			} finally {
+				watcher.stopResultWatcher();
+			}
+
+			const intercomEvents = emitted.filter((entry) => entry.event === "subagent:result-intercom");
+			assert.equal(intercomEvents.length, 1);
+			const eventData = intercomEvents[0]?.data as { message?: string; status?: string };
+			assert.equal(eventData.status, "stopped");
+			const message = String(eventData.message ?? "");
+			assert.match(message, /Children: 1 completed, 1 stopped/);
+			assert.match(message, /1\. a — completed/);
+			assert.match(message, /2\. b — stopped/);
 		} finally {
 			fs.rmSync(resultsDir, { recursive: true, force: true });
 		}

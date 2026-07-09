@@ -3,9 +3,35 @@ import path from "node:path";
 
 const queueDir = process.env.MOCK_PI_QUEUE_DIR;
 
+function exitAfterFlush(code) {
+	// process.exit() can truncate buffered stdout/stderr on slow runners (e.g.
+	// GitHub Actions), dropping the final lines the parent executor needs to see
+	// the run as successful. Drain the writable streams first, then exit.
+	// A hard timeout (ref'd, not unref'd) guards against stream.end() callbacks
+	// that never fire on some platforms (notably Windows pipe-backed stdout).
+	const streams = [process.stdout, process.stderr].filter((s) => !s.destroyed && !s.writableEnded);
+	if (streams.length === 0) {
+		process.exit(code);
+		return;
+	}
+	let exited = false;
+	const forceExit = () => {
+		if (exited) return;
+		exited = true;
+		process.exit(code);
+	};
+	let pending = streams.length;
+	for (const stream of streams) {
+		stream.end(() => {
+			if (--pending === 0) forceExit();
+		});
+	}
+	setTimeout(forceExit, 500);
+}
+
 function fail(message, exitCode = 1) {
 	process.stderr.write(`${message}\n`);
-	process.exit(exitCode);
+	exitAfterFlush(exitCode);
 }
 
 function listPendingFiles(dir) {
@@ -161,6 +187,29 @@ function writeSessionFile(args) {
 	}
 }
 
+function readSystemPromptRecords(args) {
+	const records = [];
+	for (let i = 0; i < args.length; i++) {
+		if (args[i] !== "--system-prompt" && args[i] !== "--append-system-prompt") continue;
+		const promptPath = args[i + 1];
+		if (!promptPath) continue;
+		try {
+			records.push({
+				mode: args[i],
+				path: promptPath,
+				text: fs.readFileSync(promptPath, "utf-8"),
+			});
+		} catch (error) {
+			records.push({
+				mode: args[i],
+				path: promptPath,
+				error: error instanceof Error ? error.message : String(error),
+			});
+		}
+	}
+	return records;
+}
+
 async function writeStdout(text) {
 	if (process.stdout.write(text)) return;
 	await new Promise((resolve) => process.stdout.once("drain", resolve));
@@ -230,10 +279,13 @@ async function main() {
 	const args = process.argv.slice(2);
 	const jsonMode = isJsonMode(args);
 	const response = claimNextResponse(queueDir, args) ?? defaultResponse();
+	if (response.ignoreSigterm === true) {
+		process.on("SIGTERM", () => {});
+	}
 	writeSessionFile(args);
 	fs.writeFileSync(
 		path.join(queueDir, `call-${Date.now()}-${process.pid}-${Math.random().toString(16).slice(2)}.json`),
-		JSON.stringify({ args }),
+		JSON.stringify({ args, systemPrompts: readSystemPromptRecords(args) }),
 		"utf-8",
 	);
 
@@ -275,7 +327,7 @@ async function main() {
 		await new Promise((resolve) => setTimeout(resolve, response.keepAliveAfterFinalMessageMs));
 	}
 
-	process.exit(typeof response.exitCode === "number" ? response.exitCode : 0);
+	exitAfterFlush(typeof response.exitCode === "number" ? response.exitCode : 0);
 }
 
 main().catch((error) => {

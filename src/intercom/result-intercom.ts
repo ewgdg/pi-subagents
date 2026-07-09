@@ -20,10 +20,9 @@ export function resolveSubagentResultStatus(input: {
 	state?: string;
 	interrupted?: boolean;
 	detached?: boolean;
-	timedOut?: boolean;
 }): SubagentResultStatus {
 	if (input.detached) return "detached";
-	if (input.timedOut || input.state === "timed-out") return "timed-out";
+	if (input.state === "stopped") return "stopped";
 	if (input.interrupted || input.state === "paused") return "paused";
 	if (typeof input.success === "boolean") return input.success ? "completed" : "failed";
 	if (input.state === "complete") return "completed";
@@ -37,8 +36,8 @@ function countStatuses(children: SubagentResultIntercomChild[]): Record<Subagent
 		completed: 0,
 		failed: 0,
 		paused: 0,
+		stopped: 0,
 		detached: 0,
-		"timed-out": 0,
 	};
 	for (const child of children) {
 		counts[child.status] += 1;
@@ -50,9 +49,9 @@ function formatStatusCounts(counts: Record<SubagentResultStatus, number>): strin
 	const parts = [
 		counts.completed ? `${counts.completed} completed` : undefined,
 		counts.failed ? `${counts.failed} failed` : undefined,
+		counts.stopped ? `${counts.stopped} stopped` : undefined,
 		counts.paused ? `${counts.paused} paused` : undefined,
 		counts.detached ? `${counts.detached} detached` : undefined,
-		counts["timed-out"] ? `${counts["timed-out"]} timed out` : undefined,
 	].filter((part): part is string => Boolean(part));
 	return parts.length ? parts.join(", ") : "0 results";
 }
@@ -60,7 +59,7 @@ function formatStatusCounts(counts: Record<SubagentResultStatus, number>): strin
 function resolveGroupedStatus(children: SubagentResultIntercomChild[]): SubagentResultStatus {
 	const counts = countStatuses(children);
 	if (counts.failed > 0) return "failed";
-	if (counts["timed-out"] > 0) return "timed-out";
+	if (counts.stopped > 0) return "stopped";
 	if (counts.paused > 0) return "paused";
 	if (counts.completed > 0) return "completed";
 	if (counts.detached > 0) return "detached";

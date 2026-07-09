@@ -6,7 +6,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import type { AgentConfig } from "../agents/agents.ts";
 import { normalizeSkillInput } from "../agents/skills.ts";
-import { CHAIN_RUNS_DIR, type AcceptanceInput, type JsonSchemaObject, type OutputMode } from "./types.ts";
+import { CHAIN_RUNS_DIR, type AcceptanceInput, type JsonSchemaObject, type OutputMode, type ToolBudgetConfig } from "./types.ts";
 const CHAIN_DIR_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24 hours
 const INITIAL_PROGRESS_CONTENT = "# Progress\n\n## Status\nIn Progress\n\n## Tasks\n\n## Files Changed\n\n## Notes\n";
 
@@ -21,7 +21,6 @@ export interface ResolvedStepBehavior {
 	progress: boolean;
 	skills: string[] | false;
 	model?: string;
-	thinking?: string;
 }
 
 export interface StepOverrides {
@@ -31,7 +30,6 @@ export interface StepOverrides {
 	progress?: boolean;
 	skills?: string[] | false;
 	model?: string;
-	thinking?: string;
 }
 
 function normalizeOutputOverride(output: string | false | undefined): string | false | undefined {
@@ -57,7 +55,7 @@ export interface SequentialStep {
 	progress?: boolean;
 	skill?: string | string[] | false;
 	model?: string;
-	thinking?: string;
+	toolBudget?: ToolBudgetConfig;
 	acceptance?: AcceptanceInput;
 }
 
@@ -77,7 +75,7 @@ export interface ParallelTaskItem {
 	progress?: boolean;
 	skill?: string | string[] | false;
 	model?: string;
-	thinking?: string;
+	toolBudget?: ToolBudgetConfig;
 	acceptance?: AcceptanceInput;
 }
 
@@ -107,6 +105,7 @@ export interface DynamicParallelStep {
 	failFast?: boolean;
 	phase?: string;
 	label?: string;
+	acceptance?: AcceptanceInput;
 }
 
 /** Parallel step: multiple agents running concurrently */
@@ -270,8 +269,7 @@ export function resolveStepBehavior(
 
 	const outputMode = stepOverrides.outputMode ?? "inline";
 	const model = stepOverrides.model ?? agentConfig.model;
-	const thinking = stepOverrides.thinking ?? agentConfig.thinking;
-	return { output, outputMode, reads, progress, skills, model, thinking };
+	return { output, outputMode, reads, progress, skills, model };
 }
 
 export function resolveTaskTextForFileUpdatePolicy(task: string | undefined, originalTask?: string): string | undefined {
@@ -309,6 +307,7 @@ function resolveChainPath(filePath: string, chainDir: string): string {
  * These are appended to the task to tell the agent what to read/write.
  */
 export function writeInitialProgressFile(progressDir: string): void {
+	fs.mkdirSync(progressDir, { recursive: true });
 	fs.writeFileSync(path.join(progressDir, "progress.md"), INITIAL_PROGRESS_CONTENT);
 }
 
@@ -428,8 +427,7 @@ export function resolveParallelBehaviors(
 
 		const outputMode = task.outputMode ?? "inline";
 		const model = task.model ?? config.model;
-		const thinking = task.thinking ?? config.thinking;
-		return { output, outputMode, reads, progress, skills, model, thinking };
+		return { output, outputMode, reads, progress, skills, model };
 	});
 }
 

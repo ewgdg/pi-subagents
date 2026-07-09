@@ -21,7 +21,7 @@ import { projectNestedRegistryForRoot, sanitizeSummary } from "../shared/nested-
 const WATCHER_RESTART_DELAY_MS = 3000;
 const POLL_INTERVAL_MS = 3000;
 
-type ResultWatcherFs = Pick<typeof fs, "existsSync" | "readFileSync" | "unlinkSync" | "readdirSync" | "mkdirSync" | "watch">;
+type ResultWatcherFs = Pick<typeof fs, "existsSync" | "readFileSync" | "unlinkSync" | "readdirSync" | "mkdirSync" | "realpathSync" | "watch">;
 
 type ResultWatcherTimers = {
 	setTimeout: typeof setTimeout;
@@ -40,6 +40,8 @@ type ResultFileChild = {
 	output?: string;
 	error?: string;
 	success?: boolean;
+	state?: string;
+	stopped?: boolean;
 	sessionFile?: string;
 	artifactPaths?: { outputPath?: string };
 	intercomTarget?: string;
@@ -91,6 +93,14 @@ function shouldFallBackToPolling(error: unknown): boolean {
 	return code === "EMFILE" || code === "ENOSPC";
 }
 
+function resolveNativeWatchDir(fsApi: ResultWatcherFs, resultsDir: string): string {
+	try {
+		return fsApi.realpathSync.native(resultsDir);
+	} catch {
+		return resultsDir;
+	}
+}
+
 export function createResultWatcher(
 	pi: { events: IntercomEventBus },
 	state: SubagentState,
@@ -110,8 +120,7 @@ export function createResultWatcher(
 		if (!fsApi.existsSync(resultPath)) return;
 		try {
 			const data = JSON.parse(fsApi.readFileSync(resultPath, "utf-8")) as ResultFileData;
-			if (data.sessionId && data.sessionId !== state.currentSessionId) return;
-			if (!data.sessionId && data.cwd && (!state.baseCwd || data.cwd !== state.baseCwd)) return;
+			if (typeof data.sessionId !== "string" || data.sessionId !== state.currentSessionId) return;
 
 			const runId = data.runId ?? data.id ?? file.replace(/\.json$/i, "");
 			const hasExplicitNestedChildren = data.nestedChildren !== undefined;
@@ -148,11 +157,18 @@ export function createResultWatcher(
 					: output;
 				const sessionPath = result.sessionFile ?? (resultChildren.length === 1 ? data.sessionFile : undefined);
 				const childNestedChildren = sanitizeNestedResultChildren(result.children, resultPath, `results[${index}].children`);
+				const childState = result.state === "paused" || result.state === "stopped"
+					? result.state
+					: result.stopped === true
+						? "stopped"
+						: data.state === "paused" || (!hasResultChildren && (data.state === "stopped" || typeof result.success !== "boolean"))
+							? data.state
+							: undefined;
 				return {
 					agent: result.agent ?? data.agent ?? `step-${index + 1}`,
 					status: resolveSubagentResultStatus({
 						success: result.success,
-						state: data.state === "paused" || typeof result.success !== "boolean" ? data.state : undefined,
+						state: childState,
 					}),
 					summary,
 					index,
@@ -264,7 +280,8 @@ export function createResultWatcher(
 			state.watcherRestartTimer = null;
 		}
 		try {
-			state.watcher = fsApi.watch(resultsDir, (ev, file) => {
+			const watchDir = resolveNativeWatchDir(fsApi, resultsDir);
+			state.watcher = fsApi.watch(watchDir, (ev, file) => {
 				if (ev !== "rename" || !file) return;
 				const fileName = file.toString();
 				if (!fileName.endsWith(".json")) return;

@@ -1,5 +1,4 @@
 import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
 import type { OutputMode, SavedOutputReference } from "../../shared/types.ts";
 
@@ -19,33 +18,38 @@ export function normalizeSingleOutputOverride(
 	return undefined;
 }
 
-function expandShellPath(value: string, env: NodeJS.ProcessEnv = process.env): string {
-	const tildeExpanded = value.startsWith("~/") ? path.join(os.homedir(), value.slice(2)) : value;
-	return tildeExpanded.replace(/\$([A-Za-z_][A-Za-z0-9_]*)|\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (match, bareName: string | undefined, bracedName: string | undefined) => {
-		const name = bareName ?? bracedName;
-		return name && Object.hasOwn(env, name) ? (env[name] ?? "") : match;
-	});
-}
-
 export function resolveSingleOutputPath(
 	output: string | boolean | undefined,
 	runtimeCwd: string,
 	requestedCwd?: string,
+	relativeBaseDir?: string,
 ): string | undefined {
 	if (typeof output !== "string" || !output || output === "false" || output === "true") return undefined;
-	const expandedOutput = expandShellPath(output);
-	if (path.isAbsolute(expandedOutput)) return path.resolve(expandedOutput);
-	const expandedRuntimeCwd = expandShellPath(runtimeCwd);
-	const expandedRequestedCwd = requestedCwd ? expandShellPath(requestedCwd) : undefined;
-	const baseCwd = expandedRequestedCwd
-		? (path.isAbsolute(expandedRequestedCwd) ? expandedRequestedCwd : path.resolve(expandedRuntimeCwd, expandedRequestedCwd))
-		: expandedRuntimeCwd;
-	return path.resolve(baseCwd, expandedOutput);
+	if (path.isAbsolute(output)) return output;
+	if (relativeBaseDir) return path.resolve(relativeBaseDir, output);
+	const baseCwd = requestedCwd
+		? (path.isAbsolute(requestedCwd) ? requestedCwd : path.resolve(runtimeCwd, requestedCwd))
+		: runtimeCwd;
+	return path.resolve(baseCwd, output);
+}
+
+function formatOutputPathInstruction(outputPath: string): string {
+	return [
+		`Write your findings to exactly this path: ${outputPath}`,
+		"This path is authoritative for this run.",
+		"Ignore any other output filename or output path mentioned elsewhere, including output destinations in the base agent prompt, system prompt, or task instructions.",
+	].join("\n");
 }
 
 export function injectSingleOutputInstruction(task: string, outputPath: string | undefined): string {
 	if (!outputPath) return task;
-	return `${task}\n\n---\n**Output:** Write your findings to: ${outputPath}`;
+	return `${task}\n\n---\n**Output:**\n${formatOutputPathInstruction(outputPath)}`;
+}
+
+export function injectOutputPathSystemPrompt(systemPrompt: string, outputPath: string | undefined): string {
+	if (!outputPath) return systemPrompt;
+	const instruction = `Runtime output path override:\n${formatOutputPathInstruction(outputPath)}`;
+	return systemPrompt ? `${systemPrompt}\n\n${instruction}` : instruction;
 }
 
 function countLines(text: string): number {

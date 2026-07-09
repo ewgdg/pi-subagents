@@ -114,7 +114,7 @@ Inspect
 `, "utf-8");
 
 		const created = handleCreate(
-			{ config: { name: "Review Flow", package: "Code Analysis", description: "Review flow", scope: "project", steps: [{ agent: "code-analysis.scout", task: "Inspect", thinking: "provider-specific-effort" }] } },
+			{ config: { name: "Review Flow", package: "Code Analysis", description: "Review flow", scope: "project", steps: [{ agent: "code-analysis.scout", task: "Inspect", toolBudget: { soft: 3, hard: 5, block: ["read"] } }] } },
 			ctx,
 		);
 		assert.equal(created.isError, false);
@@ -124,7 +124,7 @@ Inspect
 		assert.match(content, /^name: review-flow$/m);
 		assert.match(content, /^package: code-analysis$/m);
 		assert.match(content, /^## code-analysis\.scout$/m);
-		assert.match(content, /^thinking: provider-specific-effort$/m);
+		assert.match(content, /^toolBudget: \{"soft":3,"hard":5,"block":\["read"\]\}$/m);
 
 		const updated = handleUpdate(
 			{ chainName: "code-analysis.review-flow", config: { package: false } },
@@ -136,6 +136,48 @@ Inspect
 		content = fs.readFileSync(updatedPath, "utf-8");
 		assert.match(content, /^name: review-flow$/m);
 		assert.doesNotMatch(content, /^package:/m);
+	});
+
+	it("creates and updates agents with tool budgets", () => {
+		const ctx = { cwd: tempDir, modelRegistry: { getAvailable: () => [] } };
+		const result = handleCreate(
+			{ config: { name: "budgeted-reviewer", description: "Review with a budget", scope: "project", toolBudget: { soft: 4, hard: 7, block: ["read", "grep"] } } },
+			ctx,
+		);
+
+		assert.equal(result.isError, false);
+		const filePath = path.join(tempDir, ".pi", "agents", "budgeted-reviewer.md");
+		let content = fs.readFileSync(filePath, "utf-8");
+		assert.match(content, /^toolBudget: \{"soft":4,"hard":7,"block":\["read","grep"\]\}$/m);
+
+		const got = handleManagementAction("get", { agent: "budgeted-reviewer" }, ctx);
+		assert.equal(got.isError, false);
+		assert.match(readText(got), /Tool budget: \{"soft":4,"hard":7,"block":\["read","grep"\]\}/);
+
+		const updated = handleUpdate(
+			{ agent: "budgeted-reviewer", config: { toolBudget: { hard: 3, block: "*" } } },
+			ctx,
+		);
+		assert.equal(updated.isError, false);
+		content = fs.readFileSync(filePath, "utf-8");
+		assert.match(content, /^toolBudget: \{"hard":3,"block":"\*"\}$/m);
+	});
+
+	it("rejects invalid tool budget management config", () => {
+		const ctx = { cwd: tempDir, modelRegistry: { getAvailable: () => [] } };
+		const agentResult = handleCreate(
+			{ config: { name: "bad-budget", description: "Bad budget", scope: "project", toolBudget: { soft: 5, hard: 4 } } },
+			ctx,
+		);
+		assert.equal(agentResult.isError, true);
+		assert.match(readText(agentResult), /config\.toolBudget\.soft must be <= config\.toolBudget\.hard/);
+
+		const chainResult = handleCreate(
+			{ config: { name: "bad-chain-budget", description: "Bad budget", scope: "project", steps: [{ agent: "reviewer", toolBudget: { hard: 2, block: [] } }] } },
+			ctx,
+		);
+		assert.equal(chainResult.isError, true);
+		assert.match(readText(chainResult), /config\.steps\[0\]\.toolBudget\.block must contain at least one tool name/);
 	});
 
 	it("creates agents with completion guard disabled", () => {
@@ -153,35 +195,6 @@ Inspect
 		const got = handleManagementAction("get", { agent: "test-runner" }, ctx);
 		assert.equal(got.isError, false);
 		assert.match(readText(got), /Completion guard: false/);
-	});
-
-	it("creates agents with resource limits", () => {
-		const ctx = { cwd: tempDir, modelRegistry: { getAvailable: () => [] } };
-		const result = handleCreate(
-			{ config: { name: "budget-worker", description: "Bounded worker", scope: "project", maxExecutionTimeMs: 600000, maxTokens: 50000 } },
-			ctx,
-		);
-
-		assert.equal(result.isError, false);
-		const filePath = path.join(tempDir, ".pi", "agents", "budget-worker.md");
-		const content = fs.readFileSync(filePath, "utf-8");
-		assert.match(content, /^maxExecutionTimeMs: 600000$/m);
-		assert.match(content, /^maxTokens: 50000$/m);
-
-		const got = handleManagementAction("get", { agent: "budget-worker" }, ctx);
-		assert.equal(got.isError, false);
-		assert.match(readText(got), /Max execution time: 600000ms/);
-		assert.match(readText(got), /Max tokens: 50000/);
-	});
-
-	it("rejects invalid resource limit config", () => {
-		const result = handleCreate(
-			{ config: { name: "budget-worker", description: "Bounded worker", scope: "project", maxTokens: 0 } },
-			{ cwd: tempDir, modelRegistry: { getAvailable: () => [] } },
-		);
-
-		assert.equal(result.isError, true);
-		assert.match(readText(result), /config\.maxTokens must be an integer >= 1/);
 	});
 
 	it("rejects non-boolean completion guard config", () => {
@@ -209,6 +222,125 @@ Inspect
 		const got = handleManagementAction("get", { agent: "child-tool-user" }, ctx);
 		assert.equal(got.isError, false);
 		assert.match(readText(got), /Subagent-only extensions: \.\/tools\/child-only\.ts, \/opt\/pi\/child\.ts/);
+	});
+
+	it("does not serialize settings overrides into custom agent frontmatter during updates", () => {
+		const ctx = { cwd: tempDir, modelRegistry: { getAvailable: () => [{ provider: "anthropic", id: "claude-sonnet-4-6" }] } };
+		const settingsPath = path.join(tempDir, ".pi", "settings.json");
+		const agentPath = path.join(tempDir, ".pi", "agents", "implementer.md");
+		fs.mkdirSync(path.dirname(agentPath), { recursive: true });
+		fs.writeFileSync(settingsPath, JSON.stringify({
+			subagents: {
+				agentOverrides: {
+					implementer: {
+						model: "anthropic/claude-sonnet-4-6",
+						systemPromptMode: "append",
+						inheritProjectContext: true,
+						inheritSkills: true,
+					},
+				},
+			},
+		}, null, 2), "utf-8");
+		fs.writeFileSync(agentPath, `---
+name: implementer
+description: TDD implementer
+---
+
+Drive the failing test first.
+`, "utf-8");
+
+		const got = handleManagementAction("get", { agent: "implementer" }, ctx);
+		assert.equal(got.isError, false);
+		const beforeText = readText(got);
+		assert.match(beforeText, /Model: anthropic\/claude-sonnet-4-6/);
+		assert.match(beforeText, /System prompt mode: append/);
+		assert.match(beforeText, /Inherit project context: true/);
+		assert.match(beforeText, /Inherit skills: true/);
+
+		const updated = handleUpdate(
+			{ agent: "implementer", config: { description: "Updated implementer" } },
+			ctx,
+		);
+		assert.equal(updated.isError, false);
+
+		const content = fs.readFileSync(agentPath, "utf-8");
+		assert.match(content, /^description: Updated implementer$/m);
+		assert.doesNotMatch(content, /^model:/m);
+		assert.doesNotMatch(content, /^systemPromptMode:/m);
+		assert.doesNotMatch(content, /^inheritProjectContext:/m);
+		assert.doesNotMatch(content, /^inheritSkills:/m);
+
+		const gotAfter = handleManagementAction("get", { agent: "implementer" }, ctx);
+		assert.equal(gotAfter.isError, false);
+		const afterText = readText(gotAfter);
+		assert.match(afterText, /Model: anthropic\/claude-sonnet-4-6/);
+		assert.match(afterText, /System prompt mode: append/);
+		assert.match(afterText, /Inherit project context: true/);
+		assert.match(afterText, /Inherit skills: true/);
+	});
+
+	it("preserves explicit default-like frontmatter that blocks settings overrides during updates", () => {
+		const ctx = { cwd: tempDir, modelRegistry: { getAvailable: () => [] } };
+		const settingsPath = path.join(tempDir, ".pi", "settings.json");
+		const agentPath = path.join(tempDir, ".pi", "agents", "implementer.md");
+		fs.mkdirSync(path.dirname(agentPath), { recursive: true });
+		fs.writeFileSync(settingsPath, JSON.stringify({
+			subagents: {
+				agentOverrides: {
+					implementer: {
+						thinking: "high",
+						fallbackModels: ["openai/gpt-5-mini"],
+						tools: ["bash"],
+						skills: ["override-skill"],
+						defaultContext: "fork",
+						completionGuard: false,
+						toolBudget: { hard: 3 },
+					},
+				},
+			},
+		}, null, 2), "utf-8");
+		fs.writeFileSync(agentPath, `---
+name: implementer
+description: TDD implementer
+fallbackModels:
+thinking: off
+tools:
+skills:
+defaultContext:
+completionGuard: true
+toolBudget:
+---
+
+Drive the failing test first.
+`, "utf-8");
+
+		const got = handleManagementAction("get", { agent: "implementer" }, ctx);
+		assert.equal(got.isError, false);
+		const beforeText = readText(got);
+		assert.match(beforeText, /Thinking: off/);
+		assert.doesNotMatch(beforeText, /Thinking: high/);
+
+		const updated = handleUpdate(
+			{ agent: "implementer", config: { description: "Updated implementer" } },
+			ctx,
+		);
+		assert.equal(updated.isError, false);
+
+		const content = fs.readFileSync(agentPath, "utf-8");
+		assert.match(content, /^description: Updated implementer$/m);
+		assert.match(content, /^fallbackModels: ?$/m);
+		assert.match(content, /^thinking: off$/m);
+		assert.match(content, /^tools: ?$/m);
+		assert.match(content, /^skills: ?$/m);
+		assert.match(content, /^defaultContext: ?$/m);
+		assert.match(content, /^completionGuard: true$/m);
+		assert.match(content, /^toolBudget: ?$/m);
+
+		const gotAfter = handleManagementAction("get", { agent: "implementer" }, ctx);
+		assert.equal(gotAfter.isError, false);
+		const afterText = readText(gotAfter);
+		assert.match(afterText, /Thinking: off/);
+		assert.doesNotMatch(afterText, /Thinking: high/);
 	});
 
 	it("updates JSON chain descriptions without rewriting them as markdown", () => {
@@ -289,6 +421,70 @@ Inspect
 		assert.match(readText(listed), /Chain diagnostics:/);
 		assert.match(readText(listed), /broken\.chain\.json/);
 		assert.match(readText(listed), /Invalid JSON chain/);
+	});
+
+	it("reports builtin runtime-loaded model mappings from current session state", () => {
+		const ctx = {
+			cwd: tempDir,
+			modelRegistry: {
+				getAvailable: () => [
+					{ provider: "openai", id: "gpt-5-mini" },
+					{ provider: "anthropic", id: "claude-sonnet-4" },
+				],
+			},
+			model: { provider: "openai", id: "gpt-5-mini" },
+		};
+
+		const result = handleManagementAction("models", {}, ctx);
+		const text = readText(result);
+		assert.equal(result.isError, false);
+		assert.match(text, /^Builtin subagent models/m);
+		assert.match(text, /Current session model:\n  openai\/gpt-5-mini/);
+		assert.match(text, /(?:^|\n)scout\n  model:\n    openai\/gpt-5-mini\n  source: inherits current session model(?:\n|$)/);
+	});
+
+	it("reports override source and disabled builtin state in runtime model mappings", () => {
+		const projectSettingsPath = path.join(tempDir, ".pi", "settings.json");
+		fs.mkdirSync(path.dirname(projectSettingsPath), { recursive: true });
+		fs.writeFileSync(projectSettingsPath, JSON.stringify({
+			subagents: {
+				agentOverrides: {
+					reviewer: { model: "claude-sonnet-4", disabled: true },
+				},
+			},
+		}, null, 2), "utf-8");
+
+		const ctx = {
+			cwd: tempDir,
+			modelRegistry: {
+				getAvailable: () => [
+					{ provider: "openai", id: "gpt-5-mini" },
+					{ provider: "anthropic", id: "claude-sonnet-4" },
+				],
+			},
+			model: { provider: "openai", id: "gpt-5-mini" },
+		};
+
+		const result = handleManagementAction("models", { agent: "reviewer" }, ctx);
+		const text = readText(result);
+		assert.equal(result.isError, false);
+		assert.match(text, /^Builtin subagent model/m);
+		assert.match(text, /Agent: reviewer/);
+		assert.match(text, /Effective model:\n  anthropic\/claude-sonnet-4/);
+		assert.match(text, /Source: project override/);
+		assert.match(text, /Requested model setting:\n  claude-sonnet-4/);
+		assert.match(text, /Disabled: true/);
+		assert.match(text.replaceAll("\\", "/"), /Override file:\n  .*\.pi\/settings\.json/);
+	});
+
+	it("rejects unknown builtin filters for runtime model mappings", () => {
+		const result = handleManagementAction("models", { agent: "not-a-builtin" }, {
+			cwd: tempDir,
+			modelRegistry: { getAvailable: () => [] },
+		});
+
+		assert.equal(result.isError, true);
+		assert.match(readText(result), /Builtin agent 'not-a-builtin' not found/);
 	});
 
 	it("creates delegate with its builtin prompt defaults", () => {

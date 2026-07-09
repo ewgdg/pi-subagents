@@ -7,6 +7,8 @@ import { handleManagementAction } from "../../src/agents/agent-management.ts";
 import { serializeAgent } from "../../src/agents/agent-serializer.ts";
 import { parseChain, serializeChain } from "../../src/agents/chain-serializer.ts";
 import { discoverAgents, discoverAgentsAll, type AgentConfig } from "../../src/agents/agents.ts";
+import { buildPiArgs } from "../../src/runs/shared/pi-args.ts";
+import { THINKING_LEVELS } from "../../src/shared/model-info.ts";
 
 const tempDirs: string[] = [];
 
@@ -51,6 +53,40 @@ afterEach(() => {
 		if (!dir) continue;
 		fs.rmSync(dir, { recursive: true, force: true });
 	}
+});
+
+describe("agent permission frontmatter", () => {
+	it("preserves nested permission YAML blocks through discovery and serialization", () => {
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagents-agent-permission-frontmatter-"));
+		tempDirs.push(dir);
+		const agentsDir = path.join(dir, ".pi", "agents");
+		fs.mkdirSync(agentsDir, { recursive: true });
+		fs.writeFileSync(path.join(agentsDir, "worker.md"), `---
+name: worker
+description: Worker
+tools: bash,read,write
+permission:
+  "*": ask
+  read: allow
+  bash:
+    "*": ask
+    "git *": allow
+---
+
+Do work
+`, "utf-8");
+
+		const result = discoverAgents(dir, "project");
+		const worker = result.agents.find((agent) => agent.name === "worker");
+		assert.equal(worker?.extraFields?.permission, `"*": ask
+read: allow
+bash:
+  "*": ask
+  "git *": allow`);
+
+		const serialized = serializeAgent(worker!);
+		assert.match(serialized, /^permission:\n  "\*": ask\n  read: allow\n  bash:\n    "\*": ask\n    "git \*": allow$/m);
+	});
 });
 
 describe("agent frontmatter defaultContext", () => {
@@ -482,47 +518,70 @@ Inspect code
 	});
 });
 
-describe("agent frontmatter resource limits", () => {
-	it("serializes resource limits into agent frontmatter", () => {
-		const agent: AgentConfig = {
-			name: "worker",
-			description: "Worker",
-			systemPrompt: "Do work",
-			systemPromptMode: "replace",
-			inheritProjectContext: false,
-			inheritSkills: false,
-			source: "project",
-			filePath: "/tmp/worker.md",
-			maxExecutionTimeMs: 600000,
-			maxTokens: 50000,
-		};
-
-		const serialized = serializeAgent(agent);
-		assert.match(serialized, /maxExecutionTimeMs: 600000/);
-		assert.match(serialized, /maxTokens: 50000/);
-	});
-
-	it("parses resource limits from discovered agent frontmatter", () => {
-		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagents-agent-resource-frontmatter-"));
+describe("agent frontmatter thinking", () => {
+	it("coerces frontmatter false strings to disabled thinking", () => {
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagents-agent-thinking-false-"));
 		tempDirs.push(dir);
 		const agentsDir = path.join(dir, ".pi", "agents");
 		fs.mkdirSync(agentsDir, { recursive: true });
-		fs.writeFileSync(path.join(agentsDir, "worker.md"), `---
-name: worker
-description: Worker
-maxExecutionTimeMs: 600000
-maxTokens: 50000
+
+		for (const [name, value] of [["unquoted", "false"], ["quoted", "\"false\""]] as const) {
+			fs.writeFileSync(path.join(agentsDir, `${name}.md`), `---
+name: ${name}
+description: ${name}
+model: glm-5.2-short-fast
+thinking: ${value}
 ---
 
 Do work
 `, "utf-8");
+		}
 
-		const result = discoverAgents(dir, "project");
-		const worker = result.agents.find((agent) => agent.name === "worker");
-		assert.equal(worker?.maxExecutionTimeMs, 600000);
-		assert.equal(worker?.maxTokens, 50000);
-		assert.equal(worker?.extraFields?.maxExecutionTimeMs, undefined);
-		assert.equal(worker?.extraFields?.maxTokens, undefined);
+		const agents = discoverAgents(dir, "project").agents;
+		for (const name of ["unquoted", "quoted"]) {
+			const agent = agents.find((candidate) => candidate.name === name);
+			assert.ok(agent);
+			assert.equal(agent.thinking, false);
+
+			const { args } = buildPiArgs({
+				baseArgs: ["-p"],
+				task: "hello",
+				sessionEnabled: false,
+				model: agent.model,
+				thinking: agent.thinking,
+				inheritProjectContext: agent.inheritProjectContext,
+				inheritSkills: agent.inheritSkills,
+			});
+
+			assert.ok(args.includes("--model"));
+			assert.ok(args.includes("glm-5.2-short-fast"));
+			assert.ok(!args.some((arg) => arg.includes(":false")));
+		}
+	});
+
+	it("preserves supported frontmatter thinking strings", () => {
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagents-agent-thinking-levels-"));
+		tempDirs.push(dir);
+		const agentsDir = path.join(dir, ".pi", "agents");
+		fs.mkdirSync(agentsDir, { recursive: true });
+
+		for (const level of THINKING_LEVELS) {
+			fs.writeFileSync(path.join(agentsDir, `${level}.md`), `---
+name: thinker-${level}
+description: Thinking ${level}
+thinking: ${level}
+---
+
+Do work
+`, "utf-8");
+		}
+
+		const agents = discoverAgents(dir, "project").agents;
+		for (const level of THINKING_LEVELS) {
+			const agent = agents.find((candidate) => candidate.name === `thinker-${level}`);
+			assert.ok(agent);
+			assert.equal(agent.thinking, level);
+		}
 	});
 });
 

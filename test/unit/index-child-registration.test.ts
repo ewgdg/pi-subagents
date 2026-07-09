@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, it } from "node:test";
+import { WAIT_TOOL_ENABLED_ENV } from "../../src/runs/background/wait.ts";
 import { SUBAGENT_CHILD_ENV, SUBAGENT_FANOUT_CHILD_ENV } from "../../src/runs/shared/pi-args.ts";
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -11,6 +14,7 @@ function parentToolEnv(): NodeJS.ProcessEnv {
 	const env = { ...process.env };
 	delete env[SUBAGENT_CHILD_ENV];
 	delete env[SUBAGENT_FANOUT_CHILD_ENV];
+	delete env[WAIT_TOOL_ENABLED_ENV];
 	return env;
 }
 
@@ -23,7 +27,7 @@ describe("subagent extension child mode", () => {
 			let registeredTool;
 			const fakePi = new Proxy({
 				events,
-				registerTool(tool) { registeredTool = tool; },
+				registerTool(tool) { if (tool.name === "subagent") registeredTool = tool; },
 				registerCommand() {},
 				registerShortcut() {},
 				registerMessageRenderer() {},
@@ -77,7 +81,7 @@ describe("subagent extension child mode", () => {
 			let registeredTool;
 			const fakePi = new Proxy({
 				events,
-				registerTool(tool) { registeredTool = tool; },
+				registerTool(tool) { if (tool.name === "subagent") registeredTool = tool; },
 				registerCommand() {},
 				registerShortcut() {},
 				registerMessageRenderer() {},
@@ -93,8 +97,10 @@ describe("subagent extension child mode", () => {
 			if (!registeredTool) throw new Error("tool not registered");
 			const theme = { fg(_name, text) { return text; }, bold(text) { return text; } };
 			const asyncChain = registeredTool.renderCall({ chain: [{ agent: "worker" }, { agent: "reviewer" }], async: true }, theme).text;
+			const asyncParallel = registeredTool.renderCall({ tasks: [{ agent: "worker" }, { agent: "reviewer", count: 2 }], async: true }, theme).text;
 			const clarifyChain = registeredTool.renderCall({ chain: [{ agent: "worker" }, { agent: "reviewer" }], async: true, clarify: true }, theme).text;
 			if (!asyncChain.includes("[async]")) throw new Error("expected async chain badge, got " + asyncChain);
+			if (!asyncParallel.includes("parallel (3) [async]")) throw new Error("expected async parallel badge, got " + asyncParallel);
 			if (clarifyChain.includes("[async]")) throw new Error("unexpected clarify async badge: " + clarifyChain);
 		`;
 
@@ -113,7 +119,7 @@ describe("subagent extension child mode", () => {
 		);
 	});
 
-	it("hides foreground controls when asyncByDefault is enabled", () => {
+it("uses asyncByDefault config for the registered subagent tool", () => {
 		const script = String.raw`
 			import * as fs from "node:fs";
 			import * as os from "node:os";
@@ -121,13 +127,13 @@ describe("subagent extension child mode", () => {
 			import registerSubagentExtensionModule from "./src/extension/index.ts";
 			const registerSubagentExtension = registerSubagentExtensionModule.default ?? registerSubagentExtensionModule;
 			const agentDir = fs.mkdtempSync(path.join(os.tmpdir(), "subagent-config-"));
-			fs.mkdirSync(path.join(agentDir, "extentions", "pi-subagents"), { recursive: true });
-			fs.writeFileSync(path.join(agentDir, "extentions", "pi-subagents", "config.json"), JSON.stringify({ asyncByDefault: true }));
+			fs.mkdirSync(path.join(agentDir, "extensions", "subagent"), { recursive: true });
+			fs.writeFileSync(path.join(agentDir, "extensions", "subagent", "config.json"), JSON.stringify({ asyncByDefault: true }));
 			process.env.PI_CODING_AGENT_DIR = agentDir;
 			let registeredTool;
 			const fakePi = new Proxy({
 				events: { on() { return () => {}; }, emit() {} },
-				registerTool(tool) { registeredTool = tool; },
+				registerTool(tool) { if (tool.name === "subagent") registeredTool = tool; },
 				registerCommand() {},
 				registerShortcut() {},
 				registerMessageRenderer() {},
@@ -142,9 +148,6 @@ describe("subagent extension child mode", () => {
 			registerSubagentExtension(fakePi);
 			if (!registeredTool) throw new Error("tool not registered");
 			if (registeredTool.description.includes("async:false")) throw new Error("unexpected foreground guidance: " + registeredTool.description);
-			if (registeredTool.parameters.properties.timeoutMs !== undefined) throw new Error("timeoutMs should be hidden when async is default");
-			if (registeredTool.parameters.properties.async !== undefined) throw new Error("async should be hidden when async is default");
-			if (registeredTool.parameters.properties.clarify !== undefined) throw new Error("clarify should be hidden when async is default");
 		`;
 
 		execFileSync(
@@ -162,7 +165,7 @@ describe("subagent extension child mode", () => {
 		);
 	});
 
-	it("hides foreground controls when forceTopLevelAsync is enabled", () => {
+it("honors forceTopLevelAsync config for the registered subagent tool", () => {
 		const script = String.raw`
 			import * as fs from "node:fs";
 			import * as os from "node:os";
@@ -170,13 +173,13 @@ describe("subagent extension child mode", () => {
 			import registerSubagentExtensionModule from "./src/extension/index.ts";
 			const registerSubagentExtension = registerSubagentExtensionModule.default ?? registerSubagentExtensionModule;
 			const agentDir = fs.mkdtempSync(path.join(os.tmpdir(), "subagent-config-"));
-			fs.mkdirSync(path.join(agentDir, "extentions", "pi-subagents"), { recursive: true });
-			fs.writeFileSync(path.join(agentDir, "extentions", "pi-subagents", "config.json"), JSON.stringify({ forceTopLevelAsync: true }));
+			fs.mkdirSync(path.join(agentDir, "extensions", "subagent"), { recursive: true });
+			fs.writeFileSync(path.join(agentDir, "extensions", "subagent", "config.json"), JSON.stringify({ forceTopLevelAsync: true }));
 			process.env.PI_CODING_AGENT_DIR = agentDir;
 			let registeredTool;
 			const fakePi = new Proxy({
 				events: { on() { return () => {}; }, emit() {} },
-				registerTool(tool) { registeredTool = tool; },
+				registerTool(tool) { if (tool.name === "subagent") registeredTool = tool; },
 				registerCommand() {},
 				registerShortcut() {},
 				registerMessageRenderer() {},
@@ -191,9 +194,6 @@ describe("subagent extension child mode", () => {
 			registerSubagentExtension(fakePi);
 			if (!registeredTool) throw new Error("tool not registered");
 			if (registeredTool.description.includes("async:false")) throw new Error("unexpected foreground guidance: " + registeredTool.description);
-			if (registeredTool.parameters.properties.timeoutMs !== undefined) throw new Error("timeoutMs should be hidden when force async is enabled");
-			if (registeredTool.parameters.properties.async !== undefined) throw new Error("async should be hidden when force async is enabled");
-			if (registeredTool.parameters.properties.clarify !== undefined) throw new Error("clarify should be hidden when force async is enabled");
 		`;
 
 		execFileSync(
@@ -203,6 +203,96 @@ describe("subagent extension child mode", () => {
 				"jiti/register",
 				"--import",
 				"./test/support/register-loader.mjs",
+				"--input-type=module",
+				"--eval",
+				script,
+			],
+			{ cwd: projectRoot, env: parentToolEnv(), stdio: "pipe" },
+		);
+	});
+
+	it("honors waitTool disabled config for the registered wait tool", () => {
+		const agentDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagents-wait-tool-config-"));
+		try {
+			const configDir = path.join(agentDir, "extensions", "subagent");
+			fs.mkdirSync(configDir, { recursive: true });
+			fs.writeFileSync(path.join(configDir, "config.json"), JSON.stringify({ waitTool: { enabled: false } }), "utf-8");
+
+			const script = String.raw`
+				import registerSubagentExtensionModule from "./src/extension/index.ts";
+				const registerSubagentExtension = registerSubagentExtensionModule.default ?? registerSubagentExtensionModule;
+				const events = { on() { return () => {}; }, emit() {} };
+				let waitTool;
+				const fakePi = new Proxy({
+					events,
+					registerTool(tool) { if (tool.name === "wait") waitTool = tool; },
+					registerCommand() {},
+					registerShortcut() {},
+					registerMessageRenderer() {},
+					sendMessage() {},
+					getSessionName() { return undefined; },
+				}, {
+					get(target, prop) {
+						if (prop in target) return target[prop];
+						return () => undefined;
+					},
+				});
+				registerSubagentExtension(fakePi);
+				if (!waitTool) throw new Error("wait tool not registered");
+				const result = await waitTool.execute("wait-disabled", {}, new AbortController().signal, undefined, {});
+				process.stdout.write(JSON.stringify(result.content[0].text));
+			`;
+
+			const env = parentToolEnv();
+			env.PI_CODING_AGENT_DIR = agentDir;
+			const output = execFileSync(
+				process.execPath,
+				[
+					"--import",
+					"jiti/register",
+					"--input-type=module",
+					"--eval",
+					script,
+				],
+				{ cwd: projectRoot, env, encoding: "utf-8" },
+			);
+			assert.match(JSON.parse(output) as string, /disabled/i);
+		} finally {
+			fs.rmSync(agentDir, { recursive: true, force: true });
+		}
+	});
+
+	it("registers the main watchdog command and renderer in parent mode", () => {
+		const script = String.raw`
+			import registerSubagentExtensionModule from "./src/extension/index.ts";
+			const registerSubagentExtension = registerSubagentExtensionModule.default ?? registerSubagentExtensionModule;
+			const events = { on() { return () => {}; }, emit() {} };
+			const commands = [];
+			const renderers = [];
+			const fakePi = new Proxy({
+				events,
+				registerTool() {},
+				registerCommand(name) { commands.push(name); },
+				registerShortcut() {},
+				registerMessageRenderer(type) { renderers.push(type); },
+				sendMessage() {},
+				getSessionName() { return undefined; },
+			}, {
+				get(target, prop) {
+					if (prop in target) return target[prop];
+					return () => undefined;
+				},
+			});
+			registerSubagentExtension(fakePi);
+			if (!commands.includes("subagents-watchdog")) throw new Error("watchdog command not registered: " + commands.join(", "));
+			if (!renderers.includes("subagent_watchdog_warning")) throw new Error("watchdog renderer not registered: " + renderers.join(", "));
+		`;
+
+		execFileSync(
+			process.execPath,
+			[
+				"--import",
+				"jiti/register",
 				"--input-type=module",
 				"--eval",
 				script,

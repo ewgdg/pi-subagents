@@ -9,7 +9,7 @@ import { SUBAGENT_CHILD_ENV, SUBAGENT_FANOUT_CHILD_ENV } from "../runs/shared/pi
 import { readNestedControlRequests, resolveNestedRouteFromEnv, writeNestedControlResult } from "../runs/shared/nested-events.ts";
 import { deliverSubagentIntercomMessageEvent } from "../intercom/result-intercom.ts";
 import { resolveSubagentIntercomTarget } from "../intercom/intercom-bridge.ts";
-import { SubagentParams, createSubagentParamsSchema } from "./schemas.ts";
+import { SubagentParams } from "./schemas.ts";
 import { loadConfig } from "./config.ts";
 import { type Details, type SubagentState } from "../shared/types.ts";
 
@@ -30,6 +30,8 @@ function createChildSafeState(): SubagentState {
 	return {
 		baseCwd: "",
 		currentSessionId: null,
+		subagentInProgress: false,
+		subagentSpawns: { sessionId: null, count: 0 },
 		asyncJobs: new Map(),
 		foregroundRuns: new Map(),
 		foregroundControls: new Map(),
@@ -138,14 +140,12 @@ export default function registerFanoutChildSubagentExtension(pi: ExtensionAPI): 
 	registeredApis.add(pi);
 
 	const config = loadConfig();
-	const asyncByDefault = config.asyncByDefault === true;
-	const hideForegroundControls = asyncByDefault || config.forceTopLevelAsync === true;
 	const state = createChildSafeState();
 	const executor = createSubagentExecutor({
 		pi,
 		state,
 		config,
-		asyncByDefault,
+		asyncByDefault: config.asyncByDefault === true,
 		tempArtifactsDir: getArtifactsDir(null),
 		getSubagentSessionRoot,
 		expandTilde,
@@ -153,18 +153,15 @@ export default function registerFanoutChildSubagentExtension(pi: ExtensionAPI): 
 		allowMutatingManagementActions: false,
 	});
 
-	const subagentParams = createSubagentParamsSchema({ asyncByDefault: hideForegroundControls });
 	const tool: ToolDefinition<typeof SubagentParams, Details> = {
 		name: "subagent",
 		label: "Subagent",
 		description: [
 			"Delegate to subagents from child-safe fanout mode.",
-			"For goal-style requests such as /goal, goal, active goal, or work until evidence says done, use explicit acceptance on the delegated run: criteria for the target, evidence/verify for proof, stopRules for constraints, and maxFinalizationTurns for the bounded loop.",
-			"For implementation handoffs from a plan, PRD, spec, issue, or broad fix, put implementation instructions and plan paths in task, and put the definition of done, evidence, verification commands, constraints, and loop cap in acceptance.",
-			"Allowed management/control actions: list, get, status, interrupt, resume, append-step, doctor.",
-			"Agent config mutation actions create, update, and delete are blocked in this mode.",
+			"Allowed management/control actions: list, get, status, interrupt, resume, steer, append-step, doctor.",
+			"Agent config mutation actions (create, update, delete, eject, disable, enable, reset) are blocked in this mode.",
 		].join("\n"),
-		parameters: subagentParams,
+		parameters: SubagentParams,
 		execute(id, params, signal, onUpdate, ctx) {
 			return executor.execute(id, params as SubagentParamsLike, signal, onUpdate, ctx);
 		},

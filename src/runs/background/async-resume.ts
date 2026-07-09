@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { ASYNC_DIR, RESULTS_DIR, type AsyncStatus, type SubagentState } from "../../shared/types.ts";
 import { resolveSubagentIntercomTarget } from "../../intercom/intercom-bridge.ts";
+import { deliverInterruptRequest } from "./control-channel.ts";
 import { reconcileAsyncRun } from "./stale-run-reconciler.ts";
 
 export const ASYNC_RESUME_INTERRUPT_SIGNAL: NodeJS.Signals = process.platform === "win32" ? "SIGBREAK" : "SIGUSR2";
@@ -34,37 +35,36 @@ export type AsyncResumeTarget = {
 	intercomTarget: string;
 	cwd?: string;
 	sessionFile?: string;
+	model?: string;
+	thinking?: string;
 };
 
 type KillFn = (pid: number, signal?: NodeJS.Signals | 0) => boolean;
-
-function readAsyncStatus(asyncDir: string): AsyncStatus | null {
-	const statusPath = path.join(asyncDir, "status.json");
-	try {
-		return JSON.parse(fs.readFileSync(statusPath, "utf-8")) as AsyncStatus;
-	} catch (error) {
-		const code = error && typeof error === "object" && "code" in error ? (error as NodeJS.ErrnoException).code : undefined;
-		if (code === "ENOENT") return null;
-		throw error;
-	}
-}
 
 export function interruptLiveAsyncResumeTarget(input: {
 	target: AsyncResumeTarget & { kind: "live" };
 	state?: Pick<SubagentState, "asyncJobs">;
 	kill?: KillFn;
 	now?: () => number;
+	resultsDir?: string;
 }): { ok: true; asyncId: string } | { ok: false; message: string } {
 	const asyncId = input.target.runId;
 	if (!input.target.asyncDir) {
 		return { ok: false, message: `Async run ${asyncId} is live but does not have an async directory to interrupt.` };
 	}
-	const status = readAsyncStatus(input.target.asyncDir);
+	const status = reconcileAsyncRun(input.target.asyncDir, { resultsDir: input.resultsDir, kill: input.kill, now: input.now }).status;
 	if (!status || status.state !== "running" || typeof status.pid !== "number") {
 		return { ok: false, message: `Async run ${asyncId} is live but no interrupt-capable runner pid was found.` };
 	}
 	try {
-		(input.kill ?? process.kill)(status.pid, ASYNC_RESUME_INTERRUPT_SIGNAL);
+		deliverInterruptRequest({
+			asyncDir: input.target.asyncDir,
+			pid: status.pid,
+			kill: input.kill,
+			signal: ASYNC_RESUME_INTERRUPT_SIGNAL,
+			now: input.now,
+			source: "async-resume",
+		});
 		const tracked = input.state?.asyncJobs.get(asyncId);
 		if (tracked) {
 			tracked.activityState = undefined;
@@ -86,7 +86,9 @@ interface AsyncResultFile {
 	success?: boolean;
 	cwd?: string;
 	sessionFile?: string;
-	results?: Array<{ agent?: string; success?: boolean; sessionFile?: string; intercomTarget?: string }>;
+	model?: string;
+	thinking?: string;
+	results?: Array<{ agent?: string; success?: boolean; sessionFile?: string; intercomTarget?: string; model?: string; thinking?: string }>;
 }
 
 export interface AsyncRunLocation {
@@ -124,9 +126,11 @@ function validateResultFile(value: unknown, resultPath: string): AsyncResultFile
 			const agent = validateOptionalString(child, "agent", resultPath, `results[${index}].agent`);
 			const sessionFile = validateOptionalString(child, "sessionFile", resultPath, `results[${index}].sessionFile`);
 			const intercomTarget = validateOptionalString(child, "intercomTarget", resultPath, `results[${index}].intercomTarget`);
+			const model = validateOptionalString(child, "model", resultPath, `results[${index}].model`);
+			const thinking = validateOptionalString(child, "thinking", resultPath, `results[${index}].thinking`);
 			const success = child.success;
 			if (success !== undefined && typeof success !== "boolean") throw new Error(`Invalid async result file '${resultPath}': results[${index}].success must be a boolean.`);
-			return { agent, sessionFile, intercomTarget, ...(typeof success === "boolean" ? { success } : {}) };
+			return { agent, sessionFile, intercomTarget, model, thinking, ...(typeof success === "boolean" ? { success } : {}) };
 		});
 	}
 	const success = data.success;
@@ -139,6 +143,8 @@ function validateResultFile(value: unknown, resultPath: string): AsyncResultFile
 		state: validateOptionalString(data, "state", resultPath),
 		cwd: validateOptionalString(data, "cwd", resultPath),
 		sessionFile: validateOptionalString(data, "sessionFile", resultPath),
+		model: validateOptionalString(data, "model", resultPath),
+		thinking: validateOptionalString(data, "thinking", resultPath),
 		...(typeof success === "boolean" ? { success } : {}),
 		...(results ? { results } : {}),
 	};
@@ -254,7 +260,7 @@ export function resolveAsyncRunLocation(params: AsyncResumeParams, asyncDirRoot:
 }
 
 function resultState(result: AsyncResultFile): AsyncStatus["state"] {
-	if (result.state === "complete" || result.state === "failed" || result.state === "paused" || result.state === "running" || result.state === "queued") {
+	if (result.state === "complete" || result.state === "failed" || result.state === "paused" || result.state === "stopped" || result.state === "running" || result.state === "queued") {
 		return result.state;
 	}
 	return result.success ? "complete" : "failed";
@@ -270,8 +276,11 @@ function validateStatusForResume(status: AsyncStatus | null, source: string): vo
 		if (!Array.isArray(status.steps)) throw new Error(`Invalid async status '${source}': steps must be an array.`);
 		status.steps.forEach((step, index) => {
 			if (!step || typeof step !== "object" || Array.isArray(step)) throw new Error(`Invalid async status '${source}': steps[${index}] must be an object.`);
-			if (typeof step.agent !== "string") throw new Error(`Invalid async status '${source}': steps[${index}].agent must be a string.`);
-			if (step.sessionFile !== undefined && typeof step.sessionFile !== "string") throw new Error(`Invalid async status '${source}': steps[${index}].sessionFile must be a string.`);
+			const stepRecord = step as Record<string, unknown>;
+			if (typeof stepRecord.agent !== "string") throw new Error(`Invalid async status '${source}': steps[${index}].agent must be a string.`);
+			if (stepRecord.sessionFile !== undefined && typeof stepRecord.sessionFile !== "string") throw new Error(`Invalid async status '${source}': steps[${index}].sessionFile must be a string.`);
+			if (stepRecord.model !== undefined && typeof stepRecord.model !== "string") throw new Error(`Invalid async status '${source}': steps[${index}].model must be a string.`);
+			if (stepRecord.thinking !== undefined && typeof stepRecord.thinking !== "string") throw new Error(`Invalid async status '${source}': steps[${index}].thinking must be a string.`);
 		});
 	}
 }
@@ -301,6 +310,7 @@ export function resolveAsyncResumeTarget(params: AsyncResumeParams, deps: AsyncR
 	const runId = status?.runId ?? result?.runId ?? result?.id ?? location.resolvedId ?? (location.asyncDir ? path.basename(location.asyncDir) : "unknown");
 	const state = status?.state ?? (result ? resultState(result) : undefined);
 	if (!state) throw new Error(`Status file not found for async run '${runId}'.`);
+	if (state === "stopped") throw new Error(`Async run '${runId}' was stopped and cannot be resumed. Start a new run instead.`);
 
 	const statusSteps = status?.steps ?? [];
 	const resultSteps = result?.results ?? [];
@@ -324,6 +334,8 @@ export function resolveAsyncResumeTarget(params: AsyncResumeParams, deps: AsyncR
 					intercomTarget: resolveSubagentIntercomTarget(runId, selectedStep.agent, requestedIndex),
 					cwd: status?.cwd ?? result?.cwd,
 					sessionFile: selectedStep.sessionFile ?? status?.sessionFile ?? result?.sessionFile,
+					model: selectedStep.model,
+					thinking: selectedStep.thinking,
 				};
 			}
 			if (selectedStep?.status === "pending") throw new Error(`Async run '${runId}' child ${requestedIndex} is pending and has not started yet. Wait for it to run or complete before resuming.`);
@@ -346,6 +358,8 @@ export function resolveAsyncResumeTarget(params: AsyncResumeParams, deps: AsyncR
 				intercomTarget: resolveSubagentIntercomTarget(runId, selected.step.agent, selected.index),
 				cwd: status?.cwd ?? result?.cwd,
 				sessionFile: selected.step.sessionFile ?? status?.sessionFile ?? result?.sessionFile,
+				model: selected.step.model,
+				thinking: selected.step.thinking,
 			};
 		}
 	}
@@ -363,6 +377,8 @@ export function resolveAsyncResumeTarget(params: AsyncResumeParams, deps: AsyncR
 		?? (stepCount === 1 ? status?.sessionFile ?? result?.sessionFile : undefined);
 	if (!sessionFile && requireSessionFile) throw new Error(`Async run '${runId}' child ${index} does not have a persisted session file to resume from.`);
 	const resolvedSessionFile = sessionFile ? validateResumeSessionFile(runId, sessionFile) : undefined;
+	const stepModel = statusSteps[index]?.model ?? resultSteps[index]?.model ?? (stepCount === 1 ? result?.model : undefined);
+	const stepThinking = statusSteps[index]?.thinking ?? resultSteps[index]?.thinking ?? (stepCount === 1 ? result?.thinking : undefined);
 
 	return {
 		kind: "revive",
@@ -374,6 +390,8 @@ export function resolveAsyncResumeTarget(params: AsyncResumeParams, deps: AsyncR
 		intercomTarget: resolveSubagentIntercomTarget(runId, agent, index),
 		cwd: status?.cwd ?? result?.cwd,
 		...(resolvedSessionFile ? { sessionFile: resolvedSessionFile } : {}),
+		...(stepModel ? { model: stepModel } : {}),
+		...(stepThinking ? { thinking: stepThinking } : {}),
 	};
 }
 

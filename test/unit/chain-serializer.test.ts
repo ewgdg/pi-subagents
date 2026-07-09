@@ -22,26 +22,6 @@ describe("chain serializer", () => {
 		assert.match(serializeChain(parsed), /outputMode: file-only/);
 	});
 
-	it("round-trips step thinking", () => {
-		const parsed = parseChain(`---
-name: review-chain
-description: Review chain
----
-
-## reviewer
-model: openai/gpt-5
-thinking: high
-
-Review the diff
-`, "project", "/tmp/review-chain.md");
-
-		assert.equal(parsed.steps[0]?.model, "openai/gpt-5");
-		assert.equal(parsed.steps[0]?.thinking, "high");
-		const serialized = serializeChain(parsed);
-		assert.match(serialized, /model: openai\/gpt-5/);
-		assert.match(serialized, /thinking: high/);
-	});
-
 	it("round-trips phase, label, as, and path-based outputSchema", () => {
 		const parsed = parseChain(`---
 name: review-chain
@@ -66,6 +46,38 @@ Review the diff
 		assert.match(serialized, /label: correctness pass/);
 		assert.match(serialized, /as: correctnessFindings/);
 		assert.match(serialized, /outputSchema: \.\/schemas\/finding\.schema\.json/);
+	});
+
+	it("round-trips markdown chain toolBudget", () => {
+		const parsed = parseChain(`---
+name: review-chain
+description: Review chain
+---
+
+## reviewer
+toolBudget: {"soft":3,"hard":5,"block":["read","grep"]}
+
+Review the diff
+`, "project", "/tmp/review-chain.md");
+
+		assert.deepEqual(parsed.steps[0]?.toolBudget, { soft: 3, hard: 5, block: ["read", "grep"] });
+		assert.match(serializeChain(parsed), /toolBudget: \{"soft":3,"hard":5,"block":\["read","grep"\]\}/);
+	});
+
+	it("rejects invalid markdown chain toolBudget", () => {
+		assert.throws(
+			() => parseChain(`---
+name: review-chain
+description: Review chain
+---
+
+## reviewer
+toolBudget: {"soft":6,"hard":5}
+
+Review the diff
+`, "project", "/tmp/review-chain.md"),
+			/toolBudget for step 'reviewer'\.soft must be <= toolBudget for step 'reviewer'\.hard/,
+		);
 	});
 
 	it("rejects inline outputSchema values in markdown chains", () => {
@@ -129,6 +141,46 @@ Review the diff
 		assert.equal(reparsed.chain?.[1]?.collect?.as, "reviews");
 	});
 
+	it("parses declarative JSON chains with dynamic fanout toolBudget", () => {
+		const parsed = parseJsonChain(JSON.stringify({
+			name: "dynamic-review",
+			description: "Review dynamic targets",
+			chain: [
+				{ agent: "scout", task: "Return targets", as: "targets", outputSchema: { type: "object" }, toolBudget: { hard: 4 } },
+				{
+					expand: { from: { output: "targets", path: "/items" }, item: "target", key: "/path", maxItems: 4 },
+					parallel: { agent: "reviewer", task: "Review {target.path}", outputSchema: { type: "object" }, toolBudget: { soft: 3, hard: 5 } },
+					collect: { as: "reviews" },
+				},
+			],
+		}), "project", "/tmp/dynamic-review.chain.json");
+
+		assert.deepEqual((parsed.steps[0] as { toolBudget?: unknown }).toolBudget, { hard: 4 });
+		assert.deepEqual((parsed.steps[1] as { parallel?: { toolBudget?: unknown } }).parallel?.toolBudget, { soft: 3, hard: 5 });
+	});
+
+	it("rejects invalid JSON chain toolBudget", () => {
+		assert.throws(
+			() => parseJsonChain(JSON.stringify({
+				name: "bad-tool-budget",
+				description: "Bad tool budget",
+				chain: [{ agent: "worker", toolBudget: { hard: 0 } }],
+			}), "project", "/tmp/bad-tool-budget.chain.json"),
+			/step 1 toolBudget\.hard must be an integer >= 1/,
+		);
+		assert.throws(
+			() => parseJsonChain(JSON.stringify({
+				name: "bad-dynamic-tool-budget",
+				description: "Bad dynamic tool budget",
+				chain: [
+					{ agent: "scout", task: "Return targets", as: "targets", outputSchema: { type: "object" } },
+					{ expand: { from: { output: "targets", path: "/items" }, maxItems: 4 }, parallel: { agent: "worker", toolBudget: { hard: 3, block: [] } }, collect: { as: "reviews" } },
+				],
+			}), "project", "/tmp/bad-dynamic-tool-budget.chain.json"),
+			/step 2 dynamic template toolBudget\.block must contain at least one tool name/,
+		);
+	});
+
 	it("parses declarative JSON chains with dynamic fanout", () => {
 		const parsed = parseJsonChain(JSON.stringify({
 			name: "dynamic-review",
@@ -154,56 +206,24 @@ Review the diff
 			name: "accepted-chain",
 			description: "Chain with acceptance gates",
 			chain: [
-				{ agent: "worker", task: "Fix bug", acceptance: { criteria: ["Patch bug"], evidence: ["changed-files", "commands-run"] } },
+				{ agent: "worker", task: "Fix bug", acceptance: { level: "checked", evidence: ["changed-files", "commands-run"] } },
 				{
 					parallel: [
-						{ agent: "reviewer", task: "Review", acceptance: { criteria: ["Return concrete findings"] } },
+						{ agent: "reviewer", task: "Review", acceptance: "attested" },
 					],
 				},
 			],
 		}), "project", "/tmp/accepted-chain.chain.json");
 
-		assert.deepEqual((parsed.steps[0] as { acceptance?: unknown }).acceptance, { criteria: ["Patch bug"], evidence: ["changed-files", "commands-run"] });
-		assert.deepEqual(((parsed.steps[1] as { parallel?: Array<{ acceptance?: unknown }> }).parallel?.[0]?.acceptance), { criteria: ["Return concrete findings"] });
+		assert.deepEqual((parsed.steps[0] as { acceptance?: unknown }).acceptance, { level: "checked", evidence: ["changed-files", "commands-run"] });
+		assert.equal(((parsed.steps[1] as { parallel?: Array<{ acceptance?: unknown }> }).parallel?.[0]?.acceptance), "attested");
 		assert.throws(
 			() => parseJsonChain(JSON.stringify({
 				name: "bad-acceptance",
 				description: "Bad acceptance",
 				chain: [{ agent: "worker", acceptance: { level: "none" } }],
 			}), "project", "/tmp/bad-acceptance.chain.json"),
-			/step 1 acceptance\.level is no longer supported/,
-		);
-		assert.throws(
-			() => parseJsonChain(JSON.stringify({
-				name: "bad-criterion",
-				description: "Bad criterion",
-				chain: [{ agent: "worker", acceptance: { criteria: [{ must: "Patch" }] } }],
-			}), "project", "/tmp/bad-criterion.chain.json"),
-			/step 1 acceptance\.criteria\[0\]\.id is required/,
-		);
-		assert.throws(
-			() => parseJsonChain(JSON.stringify({
-				name: "bad-key",
-				description: "Bad key",
-				chain: [{ agent: "worker", acceptance: { criteria: ["Patch"], maxFinalizationTurn: 2 } }],
-			}), "project", "/tmp/bad-key.chain.json"),
-			/step 1 acceptance\.maxFinalizationTurn is not supported/,
-		);
-		assert.throws(
-			() => parseJsonChain(JSON.stringify({
-				name: "group-acceptance",
-				description: "Group acceptance",
-				chain: [{ parallel: [{ agent: "worker" }], acceptance: { criteria: ["Group done"] } }],
-			}), "project", "/tmp/group-acceptance.chain.json"),
-			/static parallel groups/,
-		);
-		assert.throws(
-			() => parseJsonChain(JSON.stringify({
-				name: "dynamic-group-acceptance",
-				description: "Dynamic group acceptance",
-				chain: [{ expand: { from: { output: "targets", path: "/items" }, maxItems: 2 }, parallel: { agent: "worker" }, collect: { as: "done" }, acceptance: { criteria: ["Group done"] } }],
-			}), "project", "/tmp/dynamic-group-acceptance.chain.json"),
-			/dynamic fanout groups/,
+			/step 1 acceptance\.reason is required/,
 		);
 	});
 });
